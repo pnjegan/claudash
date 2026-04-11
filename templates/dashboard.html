@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claudash</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+:root {
+  --bg:             #FAFAF8;
+  --surface:        #FFFFFF;
+  --surface-warm:   #F5F3EE;
+  --border:         #E8E6E1;
+  --border-strong:  #D4D0C8;
+  --text-primary:   #1A1916;
+  --text-secondary: #6B6860;
+  --text-tertiary:  #9C9890;
+  --accent:         #1A1916;
+  --accent-green:   #0D7A5F;
+  --accent-amber:   #B45309;
+  --accent-red:     #C0392B;
+  --accent-blue:    #1E40AF;
+  --accent-purple:  #6D28D9;
+  --accent-teal:    #0F766E;
+  --tag-bg:         #F0EEE8;
+
+  --serif: 'DM Serif Display', Georgia, serif;
+  --sans:  'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono:  'DM Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+/* ── Header ─────────────────────────────────────────────────────── */
+.header {
+  position: sticky; top: 0; z-index: 100;
+  height: 56px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center;
+  padding: 0 32px; gap: 32px;
+}
+.brand {
+  display: flex; align-items: baseline; gap: 10px;
+}
+.brand .name {
+  font-family: var(--serif);
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.brand .version {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 2px 6px;
+  background: var(--tag-bg);
+  border-radius: 3px;
+  letter-spacing: 0.05em;
+}
+
+.tabs {
+  display: flex; gap: 2px;
+  flex: 1;
+  justify-content: center;
+}
+.tab {
+  padding: 6px 14px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+.tab:hover { background: var(--surface-warm); color: var(--text-primary); }
+.tab.active { background: var(--text-primary); color: var(--bg); }
+.tab.add-tab { color: var(--text-tertiary); font-weight: 400; }
+
+.header-right {
+  display: flex; align-items: center; gap: 18px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.header-right .scan-info { font-family: var(--mono); font-size: 11px; }
+.header-right .link-btn {
+  color: var(--text-secondary);
+  font-weight: 500;
+  padding: 4px 0;
+  transition: color 0.15s;
+}
+.header-right .link-btn:hover { color: var(--text-primary); }
+
+/* ── Layout ─────────────────────────────────────────────────────── */
+.content {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 40px 32px 80px;
+}
+
+.section { margin-bottom: 48px; }
+.section-title {
+  font-family: var(--serif);
+  font-size: 22px;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.section-title .count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: var(--tag-bg);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.section-title .count.red {
+  background: #FCE8E6;
+  color: var(--accent-red);
+}
+
+/* ── Hero stat strip ────────────────────────────────────────────── */
+.hero {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 48px;
+  overflow: hidden;
+}
+.hero-cell {
+  padding: 24px 28px;
+  border-right: 1px solid var(--border);
+  animation: fadeUp 0.5s ease both;
+}
+.hero-cell:last-child { border-right: none; }
+.hero-cell:nth-child(1) { animation-delay: 0ms; }
+.hero-cell:nth-child(2) { animation-delay: 50ms; }
+.hero-cell:nth-child(3) { animation-delay: 100ms; }
+.hero-cell:nth-child(4) { animation-delay: 150ms; }
+.hero-cell:nth-child(5) { animation-delay: 200ms; }
+
+.hero-cell .label {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+}
+.hero-cell .value {
+  font-family: var(--mono);
+  font-size: 32px;
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.hero-cell .sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
+.hero-cell .value.green { color: var(--accent-green); }
+.hero-cell .value.amber { color: var(--accent-amber); }
+.hero-cell .value.red   { color: var(--accent-red); }
+
+/* ── Window panel ───────────────────────────────────────────────── */
+.window-panel {
+  background: var(--surface-warm);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px;
+  margin-bottom: 20px;
+  animation: fadeUp 0.5s ease both;
+  animation-delay: 250ms;
+}
+.window-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 18px;
+}
+.window-name {
+  font-family: var(--serif);
+  font-size: 18px;
+  color: var(--text-primary);
+}
+.window-sparks {
+  display: flex; gap: 6px;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.15em;
+}
+.bar-track {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--accent-green);
+  border-radius: 2px;
+  transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.bar-fill.amber { background: var(--accent-amber); }
+.bar-fill.red   { background: var(--accent-red); }
+
+.window-stats {
+  display: flex; gap: 28px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.window-stats .val { color: var(--text-primary); font-weight: 500; }
+
+.bar-label {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin: 18px 0 6px;
+}
+
+/* ── Projects table ─────────────────────────────────────────────── */
+.proj-table {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  border-collapse: collapse;
+  overflow: hidden;
+}
+.proj-table th, .proj-table td {
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.proj-table tr:last-child td { border-bottom: none; }
+.proj-table th {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  background: var(--surface-warm);
+}
+.proj-table td { font-family: var(--mono); color: var(--text-primary); }
+.proj-table tbody tr {
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.proj-table tbody tr:hover { background: var(--surface-warm); }
+.proj-table .proj-name {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--text-primary);
+}
+.proj-table .account-tag {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--tag-bg);
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.proj-table .model-pill {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.model-pill.opus   { background: #F3EEFF; color: var(--accent-purple); }
+.model-pill.sonnet { background: #E6F7F4; color: var(--accent-teal); }
+.model-pill.haiku  { background: #FEF3E6; color: var(--accent-amber); }
+
+.share-bar {
+  display: inline-block;
+  width: 80px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  position: relative;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.share-bar .fill {
+  position: absolute; top: 0; left: 0;
+  height: 100%;
+  background: var(--text-primary);
+  border-radius: 2px;
+}
+.trend-up   { color: var(--accent-green); }
+.trend-down { color: var(--accent-red); }
+.trend-flat { color: var(--text-tertiary); }
+
+.proj-expand {
+  background: var(--surface-warm);
+  padding: 16px 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: none;
+}
+.proj-expand.open { display: table-cell; }
+.proj-expand .kvs { display: flex; gap: 28px; flex-wrap: wrap; }
+.proj-expand .kv { display: flex; gap: 6px; }
+.proj-expand .kv .k { color: var(--text-tertiary); }
+.proj-expand .kv .v { color: var(--text-primary); font-weight: 500; }
+
+/* ── Insights list ──────────────────────────────────────────────── */
+.insights-list { display: flex; flex-direction: column; gap: 2px; }
+.insight-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  color: var(--text-primary);
+  transition: opacity 0.25s, transform 0.25s;
+}
+.insight-row:last-child { border-bottom: none; }
+.insight-row.dismissing { opacity: 0; transform: translateX(20px); }
+.insight-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-tertiary);
+}
+.insight-dot.red    { background: var(--accent-red); }
+.insight-dot.amber  { background: var(--accent-amber); }
+.insight-dot.green  { background: var(--accent-green); }
+.insight-dot.blue   { background: var(--accent-blue); }
+.insight-msg { flex: 1; }
+.insight-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-left: 8px;
+}
+.insight-dismiss {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-tertiary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+.insight-dismiss:hover { color: var(--accent-red); background: #FCE8E6; }
+
+.empty {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-tertiary);
+  padding: 20px 0;
+  font-style: italic;
+}
+
+/* ── Trends (bar chart) ─────────────────────────────────────────── */
+.trends-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px;
+}
+.trends-chart {
+  display: flex; align-items: flex-end;
+  gap: 10px;
+  height: 160px;
+  margin-bottom: 20px;
+}
+.bar-col {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px;
+  height: 100%;
+}
+.bar-col .bar-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.bar-col .bar {
+  width: 100%;
+  background: var(--text-primary);
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  transition: height 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+  position: relative;
+}
+.bar-col .bar:hover { background: var(--accent); opacity: 0.85; }
+.bar-col .bar-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+.projection {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.projection.warn { color: var(--accent-amber); }
+.projection .val { color: var(--text-primary); font-weight: 500; }
+
+/* ── Two-col grid (compaction / rightsizing) ───────────────────── */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px;
+}
+.panel h3 {
+  font-family: var(--serif);
+  font-size: 18px;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+.stat-row {
+  display: flex; gap: 28px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.stat-row .val {
+  font-size: 20px;
+  color: var(--text-primary);
+  font-weight: 500;
+  display: block;
+  margin-bottom: 2px;
+}
+.eff-table { width: 100%; font-family: var(--mono); font-size: 12px; }
+.eff-table th, .eff-table td {
+  text-align: left;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.eff-table th {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+.eff-table td:last-child { color: var(--accent-amber); text-align: right; }
+
+/* ── Footer ─────────────────────────────────────────────────────── */
+.footer {
+  margin-top: 60px;
+  padding: 24px 0;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+/* ── Animations ─────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 960px) {
+  .content { padding: 24px 18px 60px; }
+  .hero { grid-template-columns: repeat(2, 1fr); }
+  .hero-cell { border-bottom: 1px solid var(--border); }
+  .two-col { grid-template-columns: 1fr; }
+  .tabs { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">
+    <span class="name">Claudash</span>
+    <span class="version">v1.0</span>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="header-right">
+    <span class="scan-info" id="scan-info">—</span>
+    <button class="link-btn" id="scan-btn">↻ Scan</button>
+    <a class="link-btn" href="/accounts">⚙ Accounts</a>
+  </div>
+</header>
+
+<main class="content">
+  <!-- Hero stats -->
+  <section class="hero" id="hero"></section>
+
+  <!-- Windows -->
+  <section class="section" id="windows-section"></section>
+
+  <!-- Projects -->
+  <section class="section">
+    <h2 class="section-title">Projects <span class="count" id="proj-count">0</span></h2>
+    <table class="proj-table">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Account</th>
+          <th>Model</th>
+          <th>30d cost</th>
+          <th>Share</th>
+          <th>Cache</th>
+          <th>Trend</th>
+          <th>Sessions</th>
+        </tr>
+      </thead>
+      <tbody id="proj-body"></tbody>
+    </table>
+  </section>
+
+  <!-- Insights -->
+  <section class="section">
+    <h2 class="section-title">Insights <span class="count" id="ins-count">0</span></h2>
+    <div class="insights-list" id="ins-list"></div>
+  </section>
+
+  <!-- Trends -->
+  <section class="section">
+    <h2 class="section-title">7-day spend</h2>
+    <div class="trends-wrap">
+      <div class="trends-chart" id="trends-chart"></div>
+      <div class="projection" id="projection">—</div>
+    </div>
+  </section>
+
+  <!-- Compaction + rightsizing -->
+  <section class="section">
+    <div class="two-col">
+      <div class="panel">
+        <h3>Compaction</h3>
+        <div class="stat-row" id="compaction-stats"></div>
+      </div>
+      <div class="panel">
+        <h3>Model efficiency</h3>
+        <div id="rightsizing"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer" id="footer">Loading…</div>
+</main>
+
+<script>
+// ── Dashboard-key auth wrapper ───────────────────────────────────────
+const DASHBOARD_KEY_STORAGE = 'dashboard_key';
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'X-Dashboard-Key': localStorage.getItem(DASHBOARD_KEY_STORAGE) || ''
+  };
+}
+(function installAuthFetch() {
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = function(url, opts) {
+    opts = opts || {};
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') {
+      opts.headers = Object.assign(
+        {'X-Dashboard-Key': localStorage.getItem(DASHBOARD_KEY_STORAGE) || ''},
+        opts.headers || {}
+      );
+    }
+    return _origFetch(url, opts).then(function(resp) {
+      if (resp.status === 401) {
+        const key = prompt(
+          'Dashboard key required.\n\n' +
+          'Run on the server:\n' +
+          '  python3 cli.py keys\n\n' +
+          'Copy the dashboard_key value and paste it here:'
+        );
+        if (key) {
+          localStorage.setItem(DASHBOARD_KEY_STORAGE, key.trim());
+          location.reload();
+        }
+        throw new Error('unauthorized');
+      }
+      return resp;
+    });
+  };
+})();
+
+// ── App ─────────────────────────────────────────────────────────
+(function() {
+  let currentAccount = 'all';
+  const REFRESH_MS = 60_000;
+  let refreshTimer = null;
+
+  const $ = (id) => document.getElementById(id);
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  function fmtNum(n) { return (n || 0).toLocaleString('en-US'); }
+  function fmtMoney(n) { return '$' + (n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+  function fmtPct(n, digits) { return (n || 0).toFixed(digits == null ? 1 : digits) + '%'; }
+  function timeAgo(epoch) {
+    if (!epoch) return 'never';
+    const diff = Math.floor(Date.now() / 1000) - epoch;
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  }
+  function windowClass(pct) {
+    if (pct >= 80) return 'red';
+    if (pct >= 50) return 'amber';
+    return 'green';
+  }
+
+  function buildTabs(accountsList) {
+    const c = $('tabs');
+    let html = '<button class="tab' + (currentAccount === 'all' ? ' active' : '') + '" data-account="all">Combined</button>';
+    for (const a of (accountsList || [])) {
+      const cls = currentAccount === a.account_id ? ' active' : '';
+      html += '<button class="tab' + cls + '" data-account="' + esc(a.account_id) + '">' + esc(a.label) + '</button>';
+    }
+    html += '<a class="tab add-tab" href="/accounts">+</a>';
+    c.innerHTML = html;
+    c.querySelectorAll('button.tab').forEach(t => {
+      t.addEventListener('click', () => {
+        currentAccount = t.dataset.account;
+        c.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        render();
+      });
+    });
+  }
+
+  function renderHero(data) {
+    const m = data.metrics || {};
+    const windows = data.windows || {};
+    const win = windows[currentAccount] || windows.personal_max || Object.values(windows)[0] || {};
+    const winPct = win.window_pct || 0;
+    const apiEquiv = m.total_cost_30d || 0;
+    const roi = m.subscription_roi || 0;
+    const cacheHit = m.cache_hit_rate || 0;
+    const sessionsToday = m.sessions_today || 0;
+
+    const cells = [
+      {label: 'Window', value: fmtPct(winPct), sub: (win.minutes_to_limit ? '~' + win.minutes_to_limit + ' min to cap' : 'safe'), cls: windowClass(winPct)},
+      {label: 'API equiv 30d', value: fmtMoney(apiEquiv), sub: 'vs pay-per-token', cls: ''},
+      {label: 'ROI', value: roi.toFixed(1) + 'x', sub: 'subscription multiple', cls: roi >= 5 ? 'green' : ''},
+      {label: 'Cache hit', value: fmtPct(cacheHit), sub: 'reads / (reads+writes)', cls: ''},
+      {label: 'Sessions today', value: fmtNum(sessionsToday), sub: 'distinct conversations', cls: ''},
+    ];
+    $('hero').innerHTML = cells.map(c => (
+      '<div class="hero-cell">' +
+        '<div class="label">' + esc(c.label) + '</div>' +
+        '<div class="value ' + c.cls + '">' + esc(c.value) + '</div>' +
+        '<div class="sub">' + esc(c.sub) + '</div>' +
+      '</div>'
+    )).join('');
+  }
+
+  function renderWindows(data) {
+    const windows = data.windows || {};
+    const browser = data.claude_ai_browser || {};
+    const accts = data.accounts_list || [];
+    const keys = currentAccount === 'all' ? accts.map(a => a.account_id) : [currentAccount];
+
+    const blocks = keys.map(k => {
+      const w = windows[k]; if (!w) return '';
+      const ba = browser[k];
+      const pct = w.window_pct || 0;
+      const cls = windowClass(pct);
+      const total = w.total_tokens || 0;
+      const lim = w.tokens_limit || 0;
+      const burn = w.burn_per_minute || 0;
+      const reset = w.window_end ? new Date(w.window_end * 1000).toISOString().slice(11,16) + ' UTC' : '—';
+      const label = (accts.find(a => a.account_id === k) || {}).label || k;
+      const history = (w.window_history || []).slice(0, 4);
+      const sparks = history.length ? history.map(h => (h.pct_used >= 50 ? '●' : '○')).join('') : '○○○○';
+
+      let browserBar = '';
+      if (ba && ba.status === 'active' && ba.snapshot) {
+        const bpct = ba.snapshot.pct_used || 0;
+        browserBar =
+          '<div class="bar-label">claude.ai browser — ' + fmtPct(bpct) + '</div>' +
+          '<div class="bar-track"><div class="bar-fill ' + windowClass(bpct) + '" style="width:' + Math.min(bpct, 100) + '%"></div></div>';
+      }
+
+      return (
+        '<div class="window-panel">' +
+          '<div class="window-head">' +
+            '<span class="window-name">' + esc(label) + '</span>' +
+            '<span class="window-sparks">' + sparks + '</span>' +
+          '</div>' +
+          '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + Math.min(pct, 100) + '%"></div></div>' +
+          '<div class="window-stats">' +
+            '<span><span class="val">' + fmtPct(pct) + '</span> used</span>' +
+            '<span><span class="val">' + fmtNum(Math.round(burn)) + '</span> tok/min</span>' +
+            '<span>resets <span class="val">' + esc(reset) + '</span></span>' +
+            '<span><span class="val">' + fmtNum(total) + '</span> / ' + fmtNum(lim) + '</span>' +
+          '</div>' +
+          browserBar +
+        '</div>'
+      );
+    });
+    $('windows-section').innerHTML = blocks.join('');
+  }
+
+  function renderProjects(data) {
+    const projs = data.projects || [];
+    $('proj-count').textContent = projs.length;
+    if (!projs.length) {
+      $('proj-body').innerHTML = '<tr><td colspan="8" class="empty">No projects yet. Run a scan or check your data_paths in /accounts.</td></tr>';
+      return;
+    }
+    $('proj-body').innerHTML = projs.map((p, i) => {
+      const model = p.dominant_model ? p.dominant_model.replace('claude-', '') : 'sonnet';
+      const share = p.token_share_pct || 0;
+      const cache = p.cache_hit_rate || 0;
+      const wow = p.wow_change_pct || 0;
+      const trendCls = wow > 10 ? 'trend-up' : (wow < -10 ? 'trend-down' : 'trend-flat');
+      const arrow = wow > 0 ? '↑' : (wow < 0 ? '↓' : '·');
+      const cost30 = p.cost_usd_30d || 0;
+      const tokens = p.total_tokens || 0;
+      const rs = p.rightsizing_savings || 0;
+      const avgOut = p.avg_output_tokens || 0;
+      const velocity = p.token_velocity || 0;
+      const rowId = 'proj-row-' + i;
+      return (
+        '<tr data-row="' + rowId + '">' +
+          '<td><span class="proj-name">' + esc(p.name) + '</span></td>' +
+          '<td><span class="account-tag">' + esc(p.account_label || p.account) + '</span></td>' +
+          '<td><span class="model-pill ' + esc(model) + '">' + esc(model) + '</span></td>' +
+          '<td>' + fmtMoney(cost30) + '</td>' +
+          '<td><span class="share-bar"><span class="fill" style="width:' + Math.min(share, 100) + '%"></span></span>' + fmtPct(share, 0) + '</td>' +
+          '<td>' + fmtPct(cache, 0) + '</td>' +
+          '<td class="' + trendCls + '">' + arrow + ' ' + Math.abs(wow).toFixed(0) + '%</td>' +
+          '<td>' + fmtNum(p.session_count || 0) + '</td>' +
+        '</tr>' +
+        '<tr class="proj-expand-row" data-expand="' + rowId + '" style="display:none">' +
+          '<td colspan="8" class="proj-expand open">' +
+            '<div class="kvs">' +
+              '<div class="kv"><span class="k">total tokens</span><span class="v">' + fmtNum(tokens) + '</span></div>' +
+              '<div class="kv"><span class="k">avg output</span><span class="v">' + fmtNum(avgOut) + ' tok</span></div>' +
+              '<div class="kv"><span class="k">velocity</span><span class="v">' + fmtNum(Math.round(velocity)) + ' tok/hr</span></div>' +
+              '<div class="kv"><span class="k">model consistency</span><span class="v">' + fmtPct(p.model_consistency || 0, 0) + '</span></div>' +
+              '<div class="kv"><span class="k">cache ROI</span><span class="v">' + fmtMoney(p.cache_roi_usd || 0) + '</span></div>' +
+              (rs > 0 ? '<div class="kv"><span class="k">rightsizing saves</span><span class="v">' + fmtMoney(rs) + '/mo</span></div>' : '') +
+            '</div>' +
+          '</td>' +
+        '</tr>'
+      );
+    }).join('');
+    $('proj-body').querySelectorAll('tr[data-row]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const id = tr.dataset.row;
+        const exp = $('proj-body').querySelector('tr[data-expand="' + id + '"]');
+        if (exp) exp.style.display = exp.style.display === 'none' ? 'table-row' : 'none';
+      });
+    });
+  }
+
+  function renderInsights(data) {
+    const ins = data._insights || [];
+    $('ins-count').textContent = ins.length;
+    $('ins-count').className = 'count' + (ins.length > 0 ? ' red' : '');
+    if (!ins.length) {
+      $('ins-list').innerHTML = '<div class="empty">No active insights. You\'re all clear.</div>';
+      return;
+    }
+    const dotMap = {
+      model_waste: 'amber', cache_spike: 'red', compaction_gap: 'amber',
+      cost_target: 'green', window_risk: 'red', roi_milestone: 'green',
+      heavy_day: 'blue', best_window: 'blue', window_combined_risk: 'red',
+      session_expiry: 'red', pro_messages_low: 'amber',
+    };
+    $('ins-list').innerHTML = ins.map(i => {
+      const dot = dotMap[i.insight_type] || 'blue';
+      const when = i.created_at ? new Date(i.created_at * 1000).toLocaleString('en-US', {hour:'2-digit', minute:'2-digit', month:'short', day:'numeric'}) : '';
+      return (
+        '<div class="insight-row" data-id="' + i.id + '">' +
+          '<div class="insight-dot ' + dot + '"></div>' +
+          '<div class="insight-msg">' + esc(i.message) + '</div>' +
+          '<div class="insight-meta">' + esc(when) + '</div>' +
+          '<button class="insight-dismiss" data-dismiss="' + i.id + '">×</button>' +
+        '</div>'
+      );
+    }).join('');
+    $('ins-list').querySelectorAll('[data-dismiss]').forEach(b => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = b.dataset.dismiss;
+        const row = $('ins-list').querySelector('[data-id="' + id + '"]');
+        if (row) row.classList.add('dismissing');
+        fetch('/api/insights/' + id + '/dismiss', {method: 'POST', headers: authHeaders()})
+          .then(() => setTimeout(() => { if (row) row.remove(); refresh(); }, 250))
+          .catch(() => { if (row) row.classList.remove('dismissing'); });
+      });
+    });
+  }
+
+  function renderTrends(data) {
+    const trends = data.trends || {};
+    const daily = (trends.daily || []).slice(-7);
+    const chart = $('trends-chart');
+    if (!daily.length) {
+      chart.innerHTML = '<div class="empty" style="margin:auto">No trend data yet.</div>';
+      $('projection').textContent = '—';
+      return;
+    }
+    const max = Math.max(...daily.map(d => d.cost), 0.01);
+    chart.innerHTML = daily.map(d => {
+      const h = Math.max((d.cost / max) * 130, 2);
+      return (
+        '<div class="bar-col">' +
+          '<div class="bar-value">' + fmtMoney(d.cost) + '</div>' +
+          '<div class="bar" style="height:' + h + 'px" title="' + fmtMoney(d.cost) + '"></div>' +
+          '<div class="bar-label">' + esc(d.date.slice(5)) + '</div>' +
+        '</div>'
+      );
+    }).join('');
+    const mp = trends.monthly_projection || 0;
+    const warn = mp > 5000 ? ' warn' : '';
+    $('projection').className = 'projection' + warn;
+    $('projection').innerHTML = 'Monthly projection: <span class="val">' + fmtMoney(mp) + '</span>';
+  }
+
+  function renderCompaction(data) {
+    const c = data.compaction || {};
+    $('compaction-stats').innerHTML =
+      '<div><span class="val">' + fmtPct(c.avg_savings_pct || 0, 0) + '</span><div>avg savings</div></div>' +
+      '<div><span class="val">' + fmtNum(c.compaction_count || 0) + '</span><div>events 30d</div></div>' +
+      '<div><span class="val">' + fmtNum(c.sessions_needing_compact || 0) + '</span><div>needing compact</div></div>';
+  }
+
+  function renderRightsizing(data) {
+    const rs = data.rightsizing || [];
+    if (!rs.length) {
+      $('rightsizing').innerHTML = '<div class="empty">Every project is on the right model.</div>';
+      return;
+    }
+    $('rightsizing').innerHTML =
+      '<table class="eff-table">' +
+        '<thead><tr><th>Project</th><th>Model</th><th>Avg out</th><th>Saves/mo</th></tr></thead>' +
+        '<tbody>' + rs.map(s => (
+          '<tr>' +
+            '<td>' + esc(s.project) + '</td>' +
+            '<td>' + esc((s.current_model || '').replace('claude-','')) + '</td>' +
+            '<td>' + fmtNum(s.avg_output_tokens || 0) + '</td>' +
+            '<td>' + fmtMoney(s.monthly_savings || 0) + '</td>' +
+          '</tr>'
+        )).join('') + '</tbody>' +
+      '</table>';
+  }
+
+  function renderFooter(data) {
+    const rows = data.total_rows || 0;
+    const dbSize = data.db_size_mb || 0;
+    const lastScan = data.last_scan ? new Date(data.last_scan * 1000).toISOString().slice(11,16) : '—';
+    $('footer').textContent =
+      'Claudash v1.0 · ' + fmtNum(rows) + ' records · ' + dbSize + 'MB · last scan ' + lastScan + ' UTC';
+    $('scan-info').textContent = 'last scan ' + timeAgo(data.last_scan);
+  }
+
+  let lastData = null;
+  function render() { if (lastData) { paint(lastData); } else { refresh(); } }
+  function paint(data) {
+    buildTabs(data.accounts_list || []);
+    renderHero(data);
+    renderWindows(data);
+    renderProjects(data);
+    renderInsights(data);
+    renderTrends(data);
+    renderCompaction(data);
+    renderRightsizing(data);
+    renderFooter(data);
+  }
+
+  function refresh() {
+    fetch('/api/data?account=' + encodeURIComponent(currentAccount))
+      .then(r => r.json())
+      .then(data => {
+        // Insights come from /api/data as just a count; fetch the list separately.
+        const iq = currentAccount === 'all' ? '' : '?account=' + encodeURIComponent(currentAccount);
+        return fetch('/api/insights' + iq + (iq ? '&' : '?') + 'dismissed=0')
+          .then(r => r.json())
+          .then(ins => { data._insights = ins; return data; });
+      })
+      .then(data => { lastData = data; paint(data); })
+      .catch(err => { $('footer').textContent = 'Error: ' + err.message; });
+  }
+
+  // Scan button
+  $('scan-btn').addEventListener('click', function() {
+    const prev = this.textContent;
+    this.textContent = '↻ Scanning…';
+    this.disabled = true;
+    fetch('/api/scan', {method: 'POST', headers: authHeaders()})
+      .then(r => r.json())
+      .then(() => { this.textContent = prev; this.disabled = false; refresh(); })
+      .catch(() => { this.textContent = prev; this.disabled = false; });
+  });
+
+  // Auto-refresh
+  refresh();
+  refreshTimer = setInterval(refresh, REFRESH_MS);
+})();
+</script>
+</body>
+</html>

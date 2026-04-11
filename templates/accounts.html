@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Accounts — Claudash</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+:root {
+  --bg:             #FAFAF8;
+  --surface:        #FFFFFF;
+  --surface-warm:   #F5F3EE;
+  --border:         #E8E6E1;
+  --border-strong:  #D4D0C8;
+  --text-primary:   #1A1916;
+  --text-secondary: #6B6860;
+  --text-tertiary:  #9C9890;
+  --accent:         #1A1916;
+  --accent-green:   #0D7A5F;
+  --accent-amber:   #B45309;
+  --accent-red:     #C0392B;
+  --accent-blue:    #1E40AF;
+  --tag-bg:         #F0EEE8;
+
+  --serif: 'DM Serif Display', Georgia, serif;
+  --sans:  'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono:  'DM Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+/* ── Header ─────────────────────────────────────────────────────── */
+.header {
+  position: sticky; top: 0; z-index: 100;
+  height: 56px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 32px;
+}
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand .name {
+  font-family: var(--serif);
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+.brand .version {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 2px 6px;
+  background: var(--tag-bg);
+  border-radius: 3px;
+  letter-spacing: 0.05em;
+}
+.header-right {
+  display: flex; align-items: center; gap: 20px;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.header-right a { color: var(--text-secondary); font-weight: 500; transition: color 0.15s; }
+.header-right a:hover { color: var(--text-primary); }
+.btn-primary {
+  background: var(--text-primary);
+  color: var(--bg);
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+.btn-primary:hover { opacity: 0.85; }
+.btn-ghost {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+}
+.btn-ghost:hover { background: var(--surface-warm); color: var(--text-primary); }
+.btn-danger {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent-red);
+  transition: background 0.15s;
+}
+.btn-danger:hover { background: #FCE8E6; }
+
+/* ── Content ────────────────────────────────────────────────────── */
+.content {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 40px 32px 80px;
+}
+.page-title {
+  font-family: var(--serif);
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+.page-sub {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 32px;
+}
+
+.msg-zone { min-height: 0; margin-bottom: 16px; }
+.msg {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  animation: fadeIn 0.2s ease;
+}
+.msg.success { background: #E6F4EF; color: var(--accent-green); border: 1px solid #C5E4D8; }
+.msg.error   { background: #FCE8E6; color: var(--accent-red); border: 1px solid #F4C4C0; }
+.msg.info    { background: var(--surface-warm); color: var(--text-secondary); border: 1px solid var(--border); }
+
+/* ── Accounts list ──────────────────────────────────────────────── */
+.accounts-list { display: flex; flex-direction: column; gap: 16px; }
+.account-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px;
+  animation: fadeUp 0.4s ease both;
+}
+.account-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 16px;
+  gap: 20px;
+}
+.account-title { display: flex; align-items: center; gap: 12px; }
+.color-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+.color-dot.teal { background: #0F766E; }
+.color-dot.purple { background: #6D28D9; }
+.color-dot.blue { background: #1E40AF; }
+.color-dot.coral { background: #DD5D3D; }
+.color-dot.amber { background: #B45309; }
+.account-name {
+  font-family: var(--serif);
+  font-size: 20px;
+  color: var(--text-primary);
+}
+.plan-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: var(--tag-bg);
+  color: var(--text-secondary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.account-actions { display: flex; gap: 4px; }
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px 24px;
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.meta-cell .k {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.meta-cell .v {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.paths-list { margin-bottom: 12px; }
+.paths-list .k {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.path-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.path-status {
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.path-status.ok { background: var(--accent-green); }
+.path-status.missing { background: var(--accent-red); }
+.path-status.unknown { background: var(--text-tertiary); }
+
+.proj-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.proj-pill {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 10px;
+  background: var(--tag-bg);
+  color: var(--text-secondary);
+}
+
+/* ── Inline form ────────────────────────────────────────────────── */
+.form-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px;
+  margin-bottom: 20px;
+  display: none;
+  animation: fadeUp 0.3s ease;
+}
+.form-card.open { display: block; }
+.form-card h3 {
+  font-family: var(--serif);
+  font-size: 22px;
+  margin-bottom: 20px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 20px;
+  margin-bottom: 20px;
+}
+.form-field.wide { grid-column: 1 / -1; }
+.form-field label {
+  display: block;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.form-field input, .form-field select {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: border-color 0.15s;
+}
+.form-field input:focus, .form-field select:focus {
+  outline: none;
+  border-color: var(--text-primary);
+}
+.form-field input:disabled { opacity: 0.5; cursor: not-allowed; }
+.form-field .hint {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+.dynamic-list { display: flex; flex-direction: column; gap: 8px; }
+.dynamic-row { display: flex; gap: 8px; align-items: center; }
+.dynamic-row input { flex: 1; }
+.remove-btn {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--text-tertiary);
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+.remove-btn:hover { background: #FCE8E6; color: var(--accent-red); }
+.add-btn-inline {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding: 6px 0;
+}
+.add-btn-inline:hover { color: var(--text-primary); }
+.form-actions {
+  display: flex; gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.discover-suggestions {
+  background: var(--surface-warm);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.discover-suggestions .title {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.discover-item {
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color 0.15s;
+}
+.discover-item:hover { color: var(--text-primary); }
+
+/* ── Delete confirm ─────────────────────────────────────────────── */
+.delete-confirm {
+  display: none;
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: #FCE8E6;
+  border: 1px solid #F4C4C0;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.delete-confirm.open { display: block; }
+.delete-confirm p { color: var(--accent-red); margin-bottom: 10px; }
+.delete-confirm .actions { display: flex; gap: 8px; }
+
+/* ── Browser (claude.ai) card ───────────────────────────────────── */
+.browser-card {
+  background: var(--surface-warm);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-top: 16px;
+}
+.browser-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 10px;
+}
+.browser-title {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+.browser-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.browser-row {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.browser-row .val { font-weight: 500; }
+.browser-actions {
+  display: flex; gap: 6px;
+  margin-top: 10px;
+}
+
+.setup-steps {
+  display: none;
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.setup-steps.open { display: block; }
+.step {
+  display: flex; gap: 12px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.step-dot {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: var(--surface-warm);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.step.done .step-dot { background: var(--accent-green); border-color: var(--accent-green); color: white; }
+.setup-input {
+  display: flex; gap: 8px;
+  margin-top: 10px;
+}
+.setup-input input {
+  flex: 1;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.setup-input input:focus { outline: none; border-color: var(--text-primary); }
+.setup-result {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.setup-result.ok { background: #E6F4EF; color: var(--accent-green); }
+.setup-result.fail { background: #FCE8E6; color: var(--accent-red); }
+.security-note {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ── Empty state ────────────────────────────────────────────────── */
+.empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-tertiary);
+}
+.empty .title {
+  font-family: var(--serif);
+  font-size: 20px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+/* ── Animations ─────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (max-width: 760px) {
+  .content { padding: 24px 18px 60px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .meta-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">
+    <span class="name">Claudash</span>
+    <span class="version">v1.0</span>
+  </div>
+  <div class="header-right">
+    <a href="/">← Dashboard</a>
+    <button class="btn-primary" id="add-btn">+ Add account</button>
+  </div>
+</header>
+
+<main class="content">
+  <h1 class="page-title">Accounts</h1>
+  <p class="page-sub">Configure Claude subscriptions, data paths, projects, and claude.ai browser tracking.</p>
+
+  <div class="msg-zone" id="msg"></div>
+
+  <div class="form-card" id="form"></div>
+
+  <div class="accounts-list" id="accounts-list"></div>
+</main>
+
+<script>
+// ── Dashboard-key auth wrapper ───────────────────────────────────────
+const DASHBOARD_KEY_STORAGE = 'dashboard_key';
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'X-Dashboard-Key': localStorage.getItem(DASHBOARD_KEY_STORAGE) || ''
+  };
+}
+(function installAuthFetch() {
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = function(url, opts) {
+    opts = opts || {};
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') {
+      opts.headers = Object.assign(
+        {'X-Dashboard-Key': localStorage.getItem(DASHBOARD_KEY_STORAGE) || ''},
+        opts.headers || {}
+      );
+    }
+    return _origFetch(url, opts).then(function(resp) {
+      if (resp.status === 401) {
+        const key = prompt(
+          'Dashboard key required.\n\n' +
+          'Run on the server:\n' +
+          '  python3 cli.py keys\n\n' +
+          'Copy the dashboard_key value and paste it here:'
+        );
+        if (key) {
+          localStorage.setItem(DASHBOARD_KEY_STORAGE, key.trim());
+          location.reload();
+        }
+        throw new Error('unauthorized');
+      }
+      return resp;
+    });
+  };
+})();
+
+// ── App ─────────────────────────────────────────────────────────
+(function() {
+  let accounts = [];
+  let browserAccounts = {};
+  let editingId = null;
+
+  const $ = (id) => document.getElementById(id);
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  function fmtNum(n) { return (n || 0).toLocaleString('en-US'); }
+  function fmtMoney(n) { return '$' + (n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+  function timeAgo(epoch) {
+    if (!epoch) return 'never';
+    const diff = Math.floor(Date.now()/1000) - epoch;
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+    return Math.floor(diff/86400) + 'd ago';
+  }
+  function showMsg(text, type) {
+    $('msg').innerHTML = '<div class="msg ' + type + '">' + esc(text) + '</div>';
+    setTimeout(() => { $('msg').innerHTML = ''; }, 5000);
+  }
+
+  function load() {
+    fetch('/api/accounts').then(r => r.json()).then(data => {
+      accounts = data || [];
+      return fetch('/api/claude-ai/accounts').then(r => r.json());
+    }).then(ba => {
+      browserAccounts = {};
+      (ba || []).forEach(a => { browserAccounts[a.account_id] = a; });
+      renderList();
+    }).catch(() => { renderList(); });
+  }
+
+  function renderList() {
+    const el = $('accounts-list');
+    if (!accounts.length) {
+      el.innerHTML =
+        '<div class="empty">' +
+          '<div class="title">No accounts yet</div>' +
+          '<div>Click "+ Add account" to get started.</div>' +
+        '</div>';
+      return;
+    }
+    el.innerHTML = accounts.map(a => renderCard(a)).join('');
+    wireCardEvents();
+  }
+
+  function renderCard(a) {
+    const paths = a.data_paths || [];
+    const projs = a.projects || [];
+    const plan = (a.plan || 'max').toUpperCase();
+    return (
+      '<div class="account-card" data-id="' + esc(a.account_id) + '">' +
+        '<div class="account-head">' +
+          '<div class="account-title">' +
+            '<div class="color-dot ' + esc(a.color || 'teal') + '"></div>' +
+            '<div class="account-name">' + esc(a.label) + '</div>' +
+            '<div class="plan-tag">' + esc(plan) + '</div>' +
+          '</div>' +
+          '<div class="account-actions">' +
+            '<button class="btn-ghost" data-edit="' + esc(a.account_id) + '">Edit</button>' +
+            '<button class="btn-ghost" data-scan="' + esc(a.account_id) + '">Scan</button>' +
+            '<button class="btn-danger" data-delete="' + esc(a.account_id) + '">Delete</button>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="meta-grid">' +
+          '<div class="meta-cell"><div class="k">Plan cost</div><div class="v">' + fmtMoney(a.monthly_cost_usd || 0) + '/mo</div></div>' +
+          '<div class="meta-cell"><div class="k">Window limit</div><div class="v">' + fmtNum(a.window_token_limit || 0) + '</div></div>' +
+          '<div class="meta-cell"><div class="k">30d spend</div><div class="v">' + (a.cost_30d !== undefined ? fmtMoney(a.cost_30d) : '—') + '</div></div>' +
+          '<div class="meta-cell"><div class="k">Sessions (30d)</div><div class="v">' + (a.sessions_30d !== undefined ? fmtNum(a.sessions_30d) : '—') + '</div></div>' +
+        '</div>' +
+
+        '<div class="paths-list">' +
+          '<div class="k">Data paths</div>' +
+          paths.map(p =>
+            '<div class="path-row"><span class="path-status unknown" data-pathcheck="' + esc(a.account_id) + '::' + esc(p) + '"></span><span>' + esc(p) + '</span></div>'
+          ).join('') +
+        '</div>' +
+
+        (projs.length ?
+          '<div class="proj-pills">' +
+            projs.map(p => '<span class="proj-pill">' + esc(p.project_name) + '</span>').join('') +
+          '</div>' : '') +
+
+        renderBrowser(a.account_id) +
+
+        '<div class="delete-confirm" id="del-' + esc(a.account_id) + '">' +
+          '<p>This hides the account from the dashboard but keeps all session data.</p>' +
+          '<div class="actions">' +
+            '<button class="btn-danger" data-confirm-delete="' + esc(a.account_id) + '">Confirm delete</button>' +
+            '<button class="btn-ghost" data-cancel-delete="' + esc(a.account_id) + '">Cancel</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderBrowser(accountId) {
+    const ba = browserAccounts[accountId];
+    const status = ba ? ba.status : 'unconfigured';
+    const snap = ba ? ba.latest_snapshot : null;
+    const lastPolled = ba ? ba.last_polled : null;
+    const plan = ba ? ba.plan : 'max';
+    const pollAgo = lastPolled ? timeAgo(lastPolled) : 'never';
+
+    let body = '';
+    if (status === 'unconfigured') {
+      body =
+        '<div class="browser-row">Not connected — add a session key to track claude.ai window burn.</div>' +
+        '<div class="browser-actions">' +
+          '<button class="btn-primary" data-setup="' + esc(accountId) + '">Connect claude.ai</button>' +
+        '</div>';
+    } else if (status === 'expired') {
+      body =
+        '<div class="browser-row">Session expired · last polled ' + esc(pollAgo) + '</div>' +
+        '<div class="browser-actions">' +
+          '<button class="btn-primary" data-setup="' + esc(accountId) + '">Reconnect</button>' +
+          '<button class="btn-danger" data-clear-session="' + esc(accountId) + '">Remove</button>' +
+        '</div>';
+    } else if (status === 'active' && snap) {
+      const usage = plan === 'pro' && snap.messages_limit
+        ? snap.messages_used + '/' + snap.messages_limit + ' messages'
+        : (snap.pct_used || 0).toFixed(1) + '% window used';
+      body =
+        '<div class="browser-row"><span class="val">' + esc(usage) + '</span> · last polled ' + esc(pollAgo) + '</div>' +
+        '<div class="browser-actions">' +
+          '<button class="btn-ghost" data-refresh-browser="' + esc(accountId) + '">Refresh</button>' +
+          '<button class="btn-danger" data-clear-session="' + esc(accountId) + '">Remove session</button>' +
+        '</div>';
+    } else {
+      body = '<div class="browser-row">' + esc(status) + '</div>';
+    }
+
+    return (
+      '<div class="browser-card">' +
+        '<div class="browser-head">' +
+          '<span class="browser-title">claude.ai browser</span>' +
+          '<span class="browser-status">' + esc(status) + '</span>' +
+        '</div>' +
+        body +
+        '<div class="setup-steps" id="setup-' + esc(accountId) + '">' +
+          '<div class="step done"><div class="step-dot">✓</div><div>Log into claude.ai in Chrome or Vivaldi on your Mac</div></div>' +
+          '<div class="step"><div class="step-dot">1</div><div>Open DevTools → Application → Cookies → https://claude.ai, copy the <b>sessionKey</b> value</div></div>' +
+          '<div class="step"><div class="step-dot">2</div><div>Paste it below and click Verify. Your key is stored only on this server.</div></div>' +
+          '<div class="setup-input">' +
+            '<input type="password" id="sk-' + esc(accountId) + '" placeholder="sk-ant-sid01-..." autocomplete="off">' +
+            '<button class="btn-primary" data-verify-setup="' + esc(accountId) + '">Verify</button>' +
+            '<button class="btn-ghost" data-cancel-setup="' + esc(accountId) + '">Cancel</button>' +
+          '</div>' +
+          '<div id="setup-result-' + esc(accountId) + '"></div>' +
+          '<div class="security-note">Session keys are plaintext in the SQLite DB. Clear them with Remove session when you\'re done.</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function wireCardEvents() {
+    // Path existence check
+    document.querySelectorAll('[data-pathcheck]').forEach(el => {
+      const [aid, p] = el.dataset.pathcheck.split('::');
+      fetch('/api/accounts/' + aid + '/preview').then(r => r.json()).then(data => {
+        const match = (data.paths || []).find(x => x.path === p);
+        if (match && match.exists) el.className = 'path-status ok';
+        else if (match) el.className = 'path-status missing';
+        else el.className = 'path-status unknown';
+      }).catch(() => {});
+    });
+
+    // Buttons
+    document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
+      const a = accounts.find(x => x.account_id === b.dataset.edit); if (a) showForm(a);
+    }));
+    document.querySelectorAll('[data-scan]').forEach(b => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = b.dataset.scan; const prev = b.textContent;
+      b.textContent = 'Scanning…'; b.disabled = true;
+      fetch('/api/accounts/' + id + '/scan', {method: 'POST', headers: authHeaders()})
+        .then(r => r.json())
+        .then(d => { b.textContent = prev; b.disabled = false; showMsg('Scanned ' + id + ': ' + (d.rows_added || 0) + ' new rows', 'success'); load(); })
+        .catch(() => { b.textContent = prev; b.disabled = false; });
+    }));
+    document.querySelectorAll('[data-delete]').forEach(b => b.addEventListener('click', () => {
+      const el = $('del-' + b.dataset.delete);
+      if (el) el.classList.add('open');
+    }));
+    document.querySelectorAll('[data-confirm-delete]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.confirmDelete;
+      fetch('/api/accounts/' + id, {method: 'DELETE', headers: authHeaders()})
+        .then(r => r.json())
+        .then(resp => { if (resp.success) { showMsg('Deleted ' + id, 'success'); load(); } else showMsg(resp.error || 'Delete failed', 'error'); });
+    }));
+    document.querySelectorAll('[data-cancel-delete]').forEach(b => b.addEventListener('click', () => {
+      const el = $('del-' + b.dataset.cancelDelete);
+      if (el) el.classList.remove('open');
+    }));
+    document.querySelectorAll('[data-setup]').forEach(b => b.addEventListener('click', () => {
+      const el = $('setup-' + b.dataset.setup);
+      if (el) el.classList.add('open');
+    }));
+    document.querySelectorAll('[data-cancel-setup]').forEach(b => b.addEventListener('click', () => {
+      const el = $('setup-' + b.dataset.cancelSetup);
+      if (el) el.classList.remove('open');
+    }));
+    document.querySelectorAll('[data-verify-setup]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.verifySetup;
+      const sk = $('sk-' + id).value.trim();
+      const res = $('setup-result-' + id);
+      if (!sk) { res.innerHTML = '<div class="setup-result fail">Paste your session key first.</div>'; return; }
+      b.textContent = 'Verifying…'; b.disabled = true;
+      fetch('/api/claude-ai/accounts/' + id + '/setup', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({session_key: sk})
+      }).then(r => r.json()).then(resp => {
+        b.textContent = 'Verify'; b.disabled = false;
+        if (resp.success) {
+          res.innerHTML = '<div class="setup-result ok">Connected — ' + esc(resp.label) + ', ' + (resp.pct_used || 0).toFixed(1) + '% window used</div>';
+          setTimeout(load, 1500);
+        } else {
+          res.innerHTML = '<div class="setup-result fail">' + esc(resp.error || 'Verification failed') + '</div>';
+        }
+      }).catch(() => {
+        b.textContent = 'Verify'; b.disabled = false;
+        res.innerHTML = '<div class="setup-result fail">Network error</div>';
+      });
+    }));
+    document.querySelectorAll('[data-refresh-browser]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.refreshBrowser;
+      b.textContent = 'Refreshing…'; b.disabled = true;
+      fetch('/api/claude-ai/accounts/' + id + '/refresh', {method: 'POST', headers: authHeaders()})
+        .then(r => r.json())
+        .then(resp => { b.textContent = 'Refresh'; b.disabled = false; showMsg(resp.success ? 'Refreshed' : 'Refresh failed', resp.success ? 'success' : 'error'); load(); });
+    }));
+    document.querySelectorAll('[data-clear-session]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.clearSession;
+      if (!confirm('Remove the session key for ' + id + '?')) return;
+      fetch('/api/claude-ai/accounts/' + id + '/session', {method: 'DELETE', headers: authHeaders()})
+        .then(r => r.json())
+        .then(() => { showMsg('Session cleared for ' + id, 'success'); load(); });
+    }));
+  }
+
+  // ── Form ───────────────────────────────────────────────────────
+  function showForm(a) {
+    editingId = a ? a.account_id : null;
+    const f = $('form');
+    f.classList.add('open');
+    f.innerHTML =
+      '<h3>' + (a ? 'Edit ' + esc(a.label) : 'Add account') + '</h3>' +
+      '<div class="form-grid">' +
+        '<div class="form-field"><label>Account ID</label><input id="f-id" value="' + esc(a ? a.account_id : '') + '" placeholder="e.g. work_max"' + (a ? ' disabled' : '') + '><div class="hint">Lowercase slug, underscores OK</div></div>' +
+        '<div class="form-field"><label>Display label</label><input id="f-label" value="' + esc(a ? a.label : '') + '" placeholder="e.g. Work (Max)"></div>' +
+        '<div class="form-field"><label>Plan</label><select id="f-plan"><option value="max">max</option><option value="pro">pro</option><option value="api">api</option></select></div>' +
+        '<div class="form-field"><label>Color</label><select id="f-color"><option value="teal">teal</option><option value="purple">purple</option><option value="blue">blue</option><option value="coral">coral</option><option value="amber">amber</option></select></div>' +
+        '<div class="form-field"><label>Monthly cost (USD)</label><input id="f-cost" type="number" value="' + (a ? a.monthly_cost_usd : 100) + '"></div>' +
+        '<div class="form-field"><label>Window token limit</label><input id="f-limit" type="number" value="' + (a ? a.window_token_limit : 1000000) + '"></div>' +
+        '<div class="form-field wide"><label>Data paths</label><div class="dynamic-list" id="f-paths"></div><button class="add-btn-inline" id="add-path-btn">+ Add another path</button><div id="discover-suggestions"></div></div>' +
+        '<div class="form-field wide"><label>Projects (keyword → project name)</label><div class="dynamic-list" id="f-projects"></div><button class="add-btn-inline" id="add-proj-btn">+ Add another project</button></div>' +
+      '</div>' +
+      '<div class="form-actions">' +
+        '<button class="btn-primary" id="save-btn">Save</button>' +
+        '<button class="btn-ghost" id="cancel-btn">Cancel</button>' +
+      '</div>';
+
+    // Seed paths
+    const pathsList = $('f-paths');
+    const initialPaths = (a && a.data_paths && a.data_paths.length) ? a.data_paths : ['~/.claude/projects/'];
+    initialPaths.forEach(p => pathsList.appendChild(makePathRow(p)));
+
+    // Seed projects
+    const projList = $('f-projects');
+    const initialProjs = a && a.projects ? a.projects : [];
+    initialProjs.forEach(p => projList.appendChild(makeProjRow(p.project_name, (p.keywords || []).join(', '))));
+
+    // Select current values
+    if (a) {
+      $('f-plan').value = a.plan || 'max';
+      $('f-color').value = a.color || 'teal';
+    }
+
+    $('add-path-btn').addEventListener('click', () => pathsList.appendChild(makePathRow('')));
+    $('add-proj-btn').addEventListener('click', () => projList.appendChild(makeProjRow('', '')));
+    $('save-btn').addEventListener('click', save);
+    $('cancel-btn').addEventListener('click', hideForm);
+
+    // Discover
+    fetch('/api/accounts/discover', {method: 'POST', headers: authHeaders(), body: '{}'})
+      .then(r => r.json())
+      .then(d => {
+        const paths = d.discovered_paths || [];
+        if (!paths.length) return;
+        const sug = $('discover-suggestions');
+        sug.className = 'discover-suggestions';
+        sug.innerHTML =
+          '<div class="title">Found on this machine</div>' +
+          paths.map(p => '<div class="discover-item" data-discover="' + esc(p.path) + '">' + esc(p.path) + ' — ' + (p.estimated_records || 0) + ' files</div>').join('');
+        sug.querySelectorAll('[data-discover]').forEach(el => el.addEventListener('click', () => {
+          // Fill the first empty input, or add a new row
+          const inputs = pathsList.querySelectorAll('input');
+          let filled = false;
+          for (const inp of inputs) { if (!inp.value.trim()) { inp.value = el.dataset.discover; filled = true; break; } }
+          if (!filled) pathsList.appendChild(makePathRow(el.dataset.discover));
+        }));
+      }).catch(() => {});
+
+    f.scrollIntoView({behavior: 'smooth'});
+  }
+
+  function makePathRow(val) {
+    const row = document.createElement('div');
+    row.className = 'dynamic-row';
+    row.innerHTML = '<input type="text" value="' + esc(val) + '" placeholder="~/.claude/projects/"><button class="remove-btn">×</button>';
+    row.querySelector('.remove-btn').addEventListener('click', () => {
+      if ($('f-paths').children.length > 1) row.remove();
+    });
+    return row;
+  }
+
+  function makeProjRow(name, keywords) {
+    const row = document.createElement('div');
+    row.className = 'dynamic-row';
+    row.innerHTML =
+      '<input type="text" value="' + esc(name) + '" placeholder="Project name">' +
+      '<input type="text" value="' + esc(keywords) + '" placeholder="keyword1, keyword2">' +
+      '<button class="remove-btn">×</button>';
+    row.querySelector('.remove-btn').addEventListener('click', () => row.remove());
+    return row;
+  }
+
+  function hideForm() { $('form').classList.remove('open'); editingId = null; }
+
+  function save() {
+    const account_id = $('f-id').value.trim();
+    const label = $('f-label').value.trim();
+    const plan = $('f-plan').value;
+    const color = $('f-color').value;
+    const monthly_cost_usd = parseFloat($('f-cost').value) || 0;
+    const window_token_limit = parseInt($('f-limit').value) || 0;
+    const data_paths = Array.from($('f-paths').querySelectorAll('input')).map(i => i.value.trim()).filter(Boolean);
+    const projects = Array.from($('f-projects').querySelectorAll('.dynamic-row')).map(row => {
+      const inputs = row.querySelectorAll('input');
+      return {project_name: inputs[0].value.trim(), keywords: inputs[1].value.split(',').map(k => k.trim().toLowerCase()).filter(Boolean)};
+    }).filter(p => p.project_name);
+
+    if (!label) { showMsg('Display label is required', 'error'); return; }
+    if (!data_paths.length) { showMsg('At least one data path is required', 'error'); return; }
+
+    const isEdit = !!editingId;
+    const url = isEdit ? '/api/accounts/' + editingId : '/api/accounts';
+    const method = isEdit ? 'PUT' : 'POST';
+    const payload = {account_id, label, plan, color, monthly_cost_usd, window_token_limit, data_paths};
+
+    fetch(url, {method, headers: authHeaders(), body: JSON.stringify(payload)})
+      .then(r => r.json())
+      .then(resp => {
+        if (!resp.success) { showMsg(resp.error || 'Save failed', 'error'); return; }
+        // Projects: diff existing against new
+        const aid = isEdit ? editingId : account_id;
+        return fetch('/api/accounts/' + aid + '/projects').then(r => r.json()).then(existing => {
+          const existingNames = new Set(existing.map(p => p.project_name));
+          const newNames = new Set(projects.map(p => p.project_name));
+          const ops = [];
+          for (const p of projects) {
+            if (!existingNames.has(p.project_name)) {
+              ops.push(fetch('/api/accounts/' + aid + '/projects', {method: 'POST', headers: authHeaders(), body: JSON.stringify(p)}));
+            }
+          }
+          for (const p of existing) {
+            if (!newNames.has(p.project_name)) {
+              ops.push(fetch('/api/accounts/' + aid + '/projects/' + encodeURIComponent(p.project_name), {method: 'DELETE', headers: authHeaders()}));
+            }
+          }
+          return Promise.all(ops);
+        }).then(() => {
+          showMsg((isEdit ? 'Updated ' : 'Created ') + label, 'success');
+          hideForm();
+          load();
+        });
+      }).catch(e => showMsg('Error: ' + e.message, 'error'));
+  }
+
+  $('add-btn').addEventListener('click', () => showForm(null));
+  load();
+})();
+</script>
+</body>
+</html>
