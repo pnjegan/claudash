@@ -1,5 +1,101 @@
 # Claudash — Changelog
 
+## [2026-04-13] Session 7 — Prompt A: 30 pre-launch gaps fixed across security, performance, platform, data, UI, and GitHub readiness
+
+### Fixed
+- **f-string SQL fragment in subagent_metrics()** — replaced `f"WHERE {where}"` with conditions list + string concatenation. Pattern was fragile even though no user input reached the SQL.
+  Files: analyzer.py
+
+- **Cache hit formula** — changed from `reads/(reads+writes)` to `cache_reads/(cache_reads+input_tokens)`, which correctly measures what fraction of inbound context came from cache vs fresh input.
+  Files: analyzer.py, templates/dashboard.html
+
+- **Floundering detection false positives** — detection key changed from just tool name to `(tool_name, input_hash)`. Running `Bash("npm test")` 5 times intentionally no longer flagged.
+  Files: waste_patterns.py
+
+- **Heavy day insight tagged to wrong account** — `heavy_day` insights were generated with `account='all'` even when referencing a specific project. Now generated per-account. Stale "Saturdays — Tidify" insight updated to `personal_max`.
+  Files: insights.py
+
+- **"No projects yet" empty state misleading** — context-aware messages: browser-only, no-sessions, or fresh install each get a distinct message.
+  Files: templates/dashboard.html
+
+### Added
+- **30-second response cache for /api/data** — `_data_cache` dict keyed by account, TTL 30s, cleared on scan. Eliminates redundant `full_analysis()` calls during tab switching.
+  Files: server.py
+
+- **10-second query timeout** — `_get_data()` runs analysis in a thread with 10s join timeout, returns 503 on timeout.
+  Files: server.py
+
+- **Waste detection incremental** — tracks `last_waste_scan` timestamp in settings table. Only reprocesses files scanned since last waste run. O(new_sessions) not O(all_sessions).
+  Files: waste_patterns.py
+
+- **JSONL max line length guard** — lines >1MB skipped with warning. Prevents OOM on corrupted/malicious JSONL.
+  Files: scanner.py
+
+- **Sync account fallback warning** — when no org_id match found, prints explicit warning with advice to check config.py.
+  Files: server.py
+
+- **Windows/macOS/Linux path auto-detection** — `discover_claude_paths()` checks platform-specific directories (AppData on Windows, Library/Application Support on macOS, .config and .local on Linux).
+  Files: scanner.py
+
+- **Headless server detection** — CLI dashboard startup checks for `$DISPLAY`/`$WAYLAND_DISPLAY`, prints SSH tunnel instructions instead of browser-open message.
+  Files: cli.py
+
+- **mac-sync.py platform guard** — hard exit with error on non-macOS, directs users to oauth_sync.py.
+  Files: tools/mac-sync.py
+
+- **Window calculation note + tooltip** — comment in `window_metrics()` documenting epoch-modulo limitation. Dashboard shows "approximate — UTC window alignment" tooltip.
+  Files: analyzer.py, templates/dashboard.html
+
+- **Monthly projection context** — amber warning "High burn rate" when projection >$1000, subtext explains basis.
+  Files: templates/dashboard.html
+
+- **Browser-only tab hides irrelevant sections** — compaction, model efficiency, 7-day spend, trends hidden for accounts with no JSONL sessions.
+  Files: templates/dashboard.html
+
+- **Fix tracker account badge** — each fix card shows the account label it belongs to.
+  Files: templates/dashboard.html
+
+- **API equiv and ROI tooltips** — hero cells explain "if you paid per-token at API list prices" and "API-equiv / subscription cost".
+  Files: templates/dashboard.html
+
+- **config.py vs UI explanation** — accounts.html and README clarify that config.py only seeds on first run.
+  Files: templates/accounts.html, README.md
+
+- **Getting started guide in README** — requirements, quick start (local + VPS), first run, browser sync instructions.
+  Files: README.md
+
+- **Platform support table in README** — macOS/Linux/Windows/EC2/browser-only with feature matrix.
+  Files: README.md
+
+- **Privacy statement in README** — data stays local, no telemetry, dashboard key storage documented.
+  Files: README.md
+
+- **CONTRIBUTING.md** — bug reporting, known limitations, roadmap, dev setup.
+  Files: CONTRIBUTING.md
+
+- **Screenshot placeholder** — docs/screenshot_instructions.md with steps, README has commented-out image tag.
+  Files: docs/screenshot_instructions.md, README.md
+
+### Removed
+- **release-notes-cofounder.md** — renamed to release-notes-v1.0.md with cleaned language.
+  Files: docs/releases/2026-04-11/
+
+### Architecture Decisions
+- **Cache hit formula: reads/(reads+input) not reads/(reads+writes)** — cache writes aren't "misses" in the way input tokens are. The new formula measures cache effectiveness more accurately.
+  Impact: Cache hit rates will change (likely decrease slightly from ~100% to a more honest number).
+
+- **Floundering uses (tool, input_hash) key** — same tool with different inputs is intentional parallel work, not floundering. Only identical tool+input repeats indicate a stuck agent.
+  Impact: Fewer false positive waste events, more trustworthy fix tracker.
+
+- **Response cache + timeout as separate concerns** — cache avoids redundant computation, timeout prevents hung requests. Both protect against the 15-query `full_analysis()` bottleneck without restructuring it.
+  Impact: Tab switching is near-instant within 30s.
+
+### Known Issues / Not Done
+- No automated tests — all verification via live HTTP + API checks.
+- 5-hour window still epoch-modulo — not Anthropic's rolling window.
+- `full_analysis()` still runs ~15 SQL queries — cached for 30s but not restructured.
+- Screenshot not yet taken — placeholder added, needs manual capture.
+
 ## [2026-04-11] Session 1 — Full Audit, Bug Fixes, and Incremental Scanning
 
 ### Fixed
