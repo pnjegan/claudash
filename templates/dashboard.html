@@ -798,7 +798,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   <section class="section" id="windows-section"></section>
 
   <!-- Projects -->
-  <section class="section">
+  <section class="section" id="projects-section">
     <h2 class="section-title">Projects <span class="count" id="proj-count">0</span></h2>
     <table class="proj-table">
       <thead>
@@ -1434,11 +1434,11 @@ function authHeaders() {
       $('trends-section').style.display = 'none';
       $('compaction-section').style.display = 'none';
       $('stories-section').style.display = 'none';
-      $('projects').innerHTML =
-        '<div class="empty" style="text-align:center;padding:24px">' +
+      $('proj-body').innerHTML =
+        '<tr><td colspan="8" class="empty" style="text-align:center;padding:24px">' +
           'These insights require Claude Code sessions.<br>' +
           '<span style="color:var(--text-tertiary)">Browser tracking is active \u2014 window data above is live.</span>' +
-        '</div>';
+        '</td></tr>';
     } else {
       $('trends-section').style.display = '';
       $('compaction-section').style.display = '';
