@@ -946,6 +946,19 @@ function authHeaders() {
 
   function renderHero(data) {
     const m = data.metrics || {};
+    const accts = data.accounts_list || [];
+    const curAcct = accts.find(a => a.account_id === currentAccount);
+
+    // Browser-only account: no JSONL sessions, only claude.ai browser tracking
+    if (currentAccount !== 'all' && curAcct && curAcct.sessions_count === 0 && curAcct.has_browser_data) {
+      $('hero').innerHTML =
+        '<div style="background:var(--surface-warm);border:1px solid var(--border);border-radius:10px;padding:24px 32px;font-family:var(--sans)">' +
+          '<div style="font-family:var(--serif);font-size:18px;margin-bottom:6px">Browser-only account</div>' +
+          '<div style="color:var(--text-secondary);font-size:13px">No Claude Code sessions tracked. Window usage comes from claude.ai browser.</div>' +
+        '</div>';
+      return;
+    }
+
     const windows = data.windows || {};
     const win = windows[currentAccount] || windows.personal_max || Object.values(windows)[0] || {};
     const winPct = win.window_pct || 0;

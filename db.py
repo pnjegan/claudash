@@ -881,7 +881,7 @@ def get_insights(conn, account=None, dismissed=0, limit=50):
     sql = "SELECT * FROM insights WHERE dismissed = ?"
     params = [dismissed]
     if account and account != "all":
-        sql += " AND account = ?"
+        sql += " AND (account = ? OR account = 'all' OR account IS NULL OR account = '')"
         params.append(account)
     sql += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
