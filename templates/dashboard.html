@@ -853,7 +853,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   </section>
 
   <!-- Fix tracker -->
-  <section class="section">
+  <section class="section" id="fix-tracker-section">
     <h2 class="section-title">Fix tracker
       <span class="count" id="fix-count">0</span>
       <button class="link-btn" id="add-fix-btn" style="margin-left:auto;font-family:var(--sans);font-size:12px;color:var(--text-secondary);padding:4px 10px;border:1px solid var(--border);border-radius:6px">+ Record a fix</button>
@@ -1433,6 +1433,7 @@ function authHeaders() {
       // Hide sections that require JSONL session data
       $('trends-section').style.display = 'none';
       $('compaction-section').style.display = 'none';
+      $('fix-tracker-section').style.display = 'none';
       $('stories-section').style.display = 'none';
       $('proj-body').innerHTML =
         '<tr><td colspan="8" class="empty" style="text-align:center;padding:24px">' +
@@ -1442,6 +1443,7 @@ function authHeaders() {
     } else {
       $('trends-section').style.display = '';
       $('compaction-section').style.display = '';
+      $('fix-tracker-section').style.display = '';
       renderProjects(data);
       renderStories(data);
       renderTrends(data);

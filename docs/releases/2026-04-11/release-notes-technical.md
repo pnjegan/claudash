@@ -1,11 +1,9 @@
-# jk-usage-dashboard — Release Notes
+# Claudash — Technical Release Notes
 
-**Range:** last 7 days  **Total:** 1 changes  **Generated:** 2026-04-11 14:17
+**Range:** v1.0 initial release  **Generated:** 2026-04-11
 
-This release includes 1 bug fixes.
+## Initial Commit
 
-## 🔴 Fixes (1)
-
-| Date | Hash | Title | Why | Files |
-|---|---|---|---|---|
-| 2026-04-11 | `e6aedd9` | Initial commit |  | CHANGELOG.md,END_USER_REVIEW.md,FOUNDING_DOC.md,README.md,REPORT.md |
+| Date | Hash | Title | Files |
+|---|---|---|---|
+| 2026-04-11 | `e6aedd9` | Initial commit | CHANGELOG.md, README.md |

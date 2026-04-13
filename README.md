@@ -6,9 +6,6 @@ and claude.ai browser usage — for Max, Pro, and API plans.
 
 Zero pip dependencies. Single SQLite file. Single HTML page.
 
-<!-- Screenshot: run python3 cli.py dashboard, take screenshot of Personal (Max) tab -->
-<!-- ![Claudash Dashboard](docs/screenshot.png) -->
-
 ![license](https://img.shields.io/badge/license-MIT-black)
 ![python](https://img.shields.io/badge/python-3.8%2B-black)
 ![deps](https://img.shields.io/badge/dependencies-zero-black)
@@ -239,11 +236,8 @@ Every mutating endpoint requires `X-Dashboard-Key` (from `python3 cli.py keys`).
 ## Documentation
 
 - [SETUP.md](SETUP.md) — first-time setup guide
-- [REPORT.md](REPORT.md) — architecture overview
-- [FOUNDING_DOC.md](FOUNDING_DOC.md) — vision, concepts from first principles
-- [SECURITY_TRUTH_MAP.md](SECURITY_TRUTH_MAP.md) — fresh-eyes security audit
-- [END_USER_REVIEW.md](END_USER_REVIEW.md) — cold-start review + scorecard
-- [CHANGELOG.md](CHANGELOG.md) — session history
+- [CHANGELOG.md](CHANGELOG.md) — version history
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 
 ## Security
 
