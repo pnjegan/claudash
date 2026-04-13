@@ -699,8 +699,12 @@ def full_analysis(conn, account="all"):
     from db import get_insights
     active_insights = get_insights(conn, account if account != "all" else None, dismissed=0, limit=100)
 
-    # Include account list for dynamic tabs
-    accounts_list = [{"account_id": k, "label": v["label"], "color": v.get("color", "teal")}
+    # Include account list for dynamic tabs — attach session count so UI can hide empty accounts
+    acct_session_counts = {}
+    for row in conn.execute("SELECT account, COUNT(*) as cnt FROM sessions GROUP BY account").fetchall():
+        acct_session_counts[row["account"]] = row["cnt"]
+    accounts_list = [{"account_id": k, "label": v["label"], "color": v.get("color", "teal"),
+                      "sessions_count": acct_session_counts.get(k, 0)}
                      for k, v in ACCOUNTS.items()]
 
     # Sub-agent rollup, daily budget, waste summary

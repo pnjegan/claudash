@@ -926,8 +926,9 @@ function authHeaders() {
 
   function buildTabs(accountsList) {
     const c = $('tabs');
+    const withSessions = (accountsList || []).filter(a => a.sessions_count > 0 || a.account_id === currentAccount);
     let html = '<button class="tab' + (currentAccount === 'all' ? ' active' : '') + '" data-account="all">Combined</button>';
-    for (const a of (accountsList || [])) {
+    for (const a of withSessions) {
       const cls = currentAccount === a.account_id ? ' active' : '';
       html += '<button class="tab' + cls + '" data-account="' + esc(a.account_id) + '">' + esc(a.label) + '</button>';
     }
