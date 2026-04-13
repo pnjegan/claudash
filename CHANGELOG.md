@@ -360,3 +360,28 @@
 - **`work_pro` still active in DB with 0 sessions** — not deactivated because it has legitimate browser tracking data. Label mismatch (DB says "Personal (Pro)", config says "Personal (Max)") is a previous-session data issue.
 - **No tests** — all verification via API checks + live HTTP.
 - **5-hour window still epoch-modulo**, not Anthropic's rolling window.
+
+## [2026-04-13] Session 6 — Tab switching root cause fix, codebase audit, three documents
+
+### Fixed
+- **Tab switching showed stale data from wrong account** — the root cause of all account-filtering UI bugs. `buildTabs()` click handler called `render()` which reused cached `lastData` from the previous account. Changed to call `refresh()` which re-fetches `/api/data` and `/api/insights` with the correct `currentAccount` parameter. One-line fix (`render()` → `refresh()`).
+  Why: Work (Pro) tab was showing 6 projects and 17 insights instead of 0 and 1. Every section rendered stale data on tab switch.
+  Files: templates/dashboard.html (line 942)
+
+### Added
+- **Complete codebase narrative** (`/tmp/claudash_narrative.md`, 336 lines) — 10-section document covering: the problem, inspiration, all 15 features with technical depth, architecture decisions, security model, performance characteristics, unique differentiators, real numbers from the DB (49x ROI, $5,972 API equiv, 110 waste events, 1,321-agent spike), three user personas, and roadmap.
+
+- **Pentest + observability audit** (`/tmp/claudash_pentest.md`, 191 lines) — three auditors: (1) Security pentester testing 10 attack vectors with live curl commands (path traversal BLOCKED, SQL injection BLOCKED, auth bypass BLOCKED, DoS BLOCKED, CORS PARTIAL, XSS BLOCKED); (2) Observability engineer assessing logging, error handling, health endpoints, metrics, restart recovery; (3) UX tester doing a stranger test (clone-to-running: 10/10, first-run: 7/10, fix tracker: 5/10).
+
+- **External validation prompt** (`/tmp/claudash_improvements.md`, 179 lines) — self-contained prompt for any AI to validate: ROI math correctness, cache hit formula, waste detection logic soundness, security gaps, and the 5 most critical functions with code snippets for review.
+
+### Architecture Decisions
+- **`render()` vs `refresh()` distinction clarified** — `render()` is for re-painting with existing data (e.g., window resize). `refresh()` is for loading new data (tab switch, scan complete, auto-refresh timer). Tab switches must always `refresh()` because the account filter changes the server-side query.
+  Why: The cached `lastData` pattern was a performance optimization (avoid re-fetching on re-paint) that became a bug when tab switches reused it.
+  Impact: Tab switches now make 2 HTTP requests (data + insights) instead of 0. This is correct behavior — the data IS different per account.
+
+### Known Issues / Not Done
+- **No automated tests** — all verification via live HTTP + API checks.
+- **5-hour window still epoch-modulo** — not Anthropic's rolling window.
+- **Waste detection re-reads all JSONL** on every `detect_all()` call.
+- **`full_analysis()` runs ~15 SQL queries** per `/api/data` call, no caching.
