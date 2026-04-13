@@ -939,7 +939,7 @@ function authHeaders() {
         currentAccount = t.dataset.account;
         c.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
         t.classList.add('active');
-        render();
+        refresh();
       });
     });
   }
