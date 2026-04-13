@@ -481,3 +481,47 @@
 - **5-hour window still epoch-modulo** — not Anthropic's rolling window.
 - **Waste detection re-reads all JSONL** on every `detect_all()` call.
 - **`full_analysis()` runs ~15 SQL queries** per `/api/data` call, no caching.
+
+## [2026-04-13] Session 8 — npx support, Efficiency Score, init wizard
+
+### Added
+- **npx claudash** — zero-install entry point via npm
+  Why: Users can run `npx claudash` without git clone, pip, or manual setup
+  Files: `package.json`, `bin/claudash.js`, `.npmignore`
+
+- **Efficiency Score (0-100)** — 5-dimension weighted score replacing ROI as headline metric
+  Dimensions: cache efficiency (25%), model right-sizing (25%), window discipline (20%), floundering rate (20%), compaction (10%)
+  Grade A-F with color coding. Clickable breakdown panel in dashboard hero.
+  Why: ROI was misleading — high number looked good but didn't reflect actual usage quality
+  Files: `analyzer.py` (compute_efficiency_score), `templates/dashboard.html` (hero card + breakdown), `cli.py` (stats output)
+
+- **Init wizard** — 3-question first-run setup (plan type, project review, account name)
+  Auto-detects first run in cmd_dashboard(), saves config to DB, auto-starts dashboard
+  Why: New users had no guided onboarding — config.py editing was the only path
+  Files: `cli.py` (cmd_init, cmd_dashboard first-run detection)
+
+- **--port and --no-browser flags** on `cli.py dashboard`
+  Why: Required for npx orchestration and headless/CI usage
+  Files: `cli.py`
+
+- **MCP server marked verified** in CONTRIBUTING.md (prior commit this session)
+  Why: All 5 claudash MCP tools confirmed working in Claude Code
+  Files: `CONTRIBUTING.md`
+
+- **README updated** — npx as primary quick start, Efficiency Score in features list
+  Files: `README.md`
+
+### Architecture Decisions
+- Efficiency Score replaces ROI as the first hero card
+  Why: ROI was a vanity metric (60x sounds great but means nothing actionable). Score of 42/F is honest and tells you exactly what to fix.
+  Impact: Dashboard now leads with actionable intelligence, not flattery
+
+- npx installs to ~/.claudash via git clone, not npm dependencies
+  Why: Zero pip dependencies is a core promise — npm is just the launcher, Python does the work
+  Impact: npm package is tiny (launcher only), actual code lives in git clone
+
+### Known Issues / Not Done
+- `npm publish` not yet run — package.json ready but not published to npm registry
+  Why deferred: Needs manual npm login + publish step
+- Efficiency score of 42/F reflects real data: floundering rate scored 0/100, model right-sizing 21/100
+  Why: These are real problems to fix, not bugs in the score
