@@ -412,7 +412,7 @@ def get_accounts_config(conn=None):
             "type": r["plan"],
             "plan": r["plan"],
             "monthly_cost_usd": r["monthly_cost_usd"] or 0,
-            "window_token_limit": r["window_token_limit"] or 1_000_000,
+            "window_token_limit": r["window_token_limit"] if r["window_token_limit"] is not None else 1_000_000,
             "color": r["color"] or "teal",
             "data_paths": paths,
             "daily_budget_usd": budget,
@@ -1136,7 +1136,7 @@ def get_real_story_insights():
         if avg_daily > 0 and top["daily_cost"] > 3 * avg_daily:
             multiplier = round(top["daily_cost"] / avg_daily, 1)
             stories.append({
-                "type": "cost_spike_day",
+                "type": "cost_spike_day", "badge": "Cost Spike",
                 "title": f"{top['day'][5:]}: {multiplier}x your normal daily spend",
                 "finding": (
                     f"Highest day was ${top['daily_cost']:.2f} API equiv — "

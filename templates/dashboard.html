@@ -1036,19 +1036,25 @@ function authHeaders() {
           '<div class="bar-track"><div class="bar-fill ' + windowClass(bpct) + '" style="width:' + Math.min(bpct, 100) + '%"></div></div>';
       }
 
+      // Skip window panel for accounts with no token limit (e.g., Pro message-based plans)
+      // unless they have browser tracking data
+      if (lim === 0 && !browserBar && total === 0) return '';
+
+      var tokenStats = lim > 0
+        ? '<span><span class="val">' + fmtPct(pct) + '</span> used</span>' +
+          '<span><span class="val">' + fmtNum(Math.round(burn)) + '</span> tok/min</span>' +
+          '<span>resets <span class="val">' + esc(reset) + '</span></span>' +
+          '<span><span class="val">' + fmtNum(total) + '</span> / ' + fmtNum(lim) + '</span>'
+        : '<span class="val" style="color:var(--text-tertiary)">No token window (message-based plan)</span>';
+
       return (
         '<div class="window-panel">' +
           '<div class="window-head">' +
             '<span class="window-name">' + esc(label) + '</span>' +
             '<span class="window-sparks">' + sparks + '</span>' +
           '</div>' +
-          '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + Math.min(pct, 100) + '%"></div></div>' +
-          '<div class="window-stats">' +
-            '<span><span class="val">' + fmtPct(pct) + '</span> used</span>' +
-            '<span><span class="val">' + fmtNum(Math.round(burn)) + '</span> tok/min</span>' +
-            '<span>resets <span class="val">' + esc(reset) + '</span></span>' +
-            '<span><span class="val">' + fmtNum(total) + '</span> / ' + fmtNum(lim) + '</span>' +
-          '</div>' +
+          (lim > 0 ? '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + Math.min(pct, 100) + '%"></div></div>' : '') +
+          '<div class="window-stats">' + tokenStats + '</div>' +
           browserBar +
         '</div>'
       );
@@ -1168,6 +1174,8 @@ function authHeaders() {
       cost_target: 'green', window_risk: 'red', roi_milestone: 'green',
       heavy_day: 'blue', best_window: 'blue', window_combined_risk: 'red',
       session_expiry: 'red', pro_messages_low: 'amber',
+      floundering_detected: 'red', subagent_cost_spike: 'amber',
+      budget_warning: 'amber', budget_exceeded: 'red',
     };
     $('ins-list').innerHTML = ins.map(i => {
       const dot = dotMap[i.insight_type] || 'blue';
@@ -1213,7 +1221,7 @@ function authHeaders() {
         cost_spike_day: 'Cost Spike'
       };
       grid.innerHTML = stories.map(function(s) {
-        var badge = badgeLabels[s.type] || s.type;
+        var badge = s.badge || badgeLabels[s.type] || s.type;
         var footer = 'Verified';
         if (s.sessions_analyzed) footer += ' · ' + s.sessions_analyzed + ' sessions analyzed';
         return (

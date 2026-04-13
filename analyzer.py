@@ -564,7 +564,7 @@ def record_window_burn(conn, account="personal_max"):
     acct_info = ACCOUNTS.get(account, {})
     insert_window_burn(
         conn, account, wm["window_start"], wm["window_end"],
-        wm["total_tokens"], acct_info.get("window_token_limit", 1_000_000),
+        wm["total_tokens"], wm["tokens_limit"],
         wm["window_pct"], 1 if wm["window_pct"] >= 100 else 0,
     )
     conn.commit()

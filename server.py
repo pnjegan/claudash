@@ -522,7 +522,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"{filename} not found")
 
     def _cors_origin(self):
-        return "http://127.0.0.1:8080"
+        origin = self.headers.get("Origin", "")
+        allowed = {"http://127.0.0.1:8080", "http://localhost:8080"}
+        return origin if origin in allowed else "http://127.0.0.1:8080"
 
     def _serve_json(self, data, status=200):
         body = json.dumps(data, default=str).encode("utf-8")
