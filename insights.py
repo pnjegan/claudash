@@ -272,6 +272,84 @@ def generate_insights(conn=None):
     except Exception:
         pass
 
+    # ── 12. SUBAGENT_COST_SPIKE ──
+    try:
+        from analyzer import subagent_metrics as _subagent_metrics
+        sm = _subagent_metrics(conn, "all")
+        for proj, s in sm.items():
+            if s["subagent_pct_of_total"] > 30 and s["subagent_session_count"] > 0:
+                if _insight_exists_recent(conn, "subagent_cost_spike", proj):
+                    continue
+                pct = s["subagent_pct_of_total"]
+                cost = s["subagent_cost_usd"]
+                msg = (f"{proj} sub-agents consumed {pct:.0f}% of project cost "
+                       f"(${cost:.2f}) — check if orchestration is efficient")
+                detail = json.dumps({"pct": pct, "cost": cost,
+                                     "sessions": s["subagent_session_count"]})
+                # Pick any account for this project (first match)
+                acct_row = conn.execute(
+                    "SELECT account FROM sessions WHERE project=? LIMIT 1", (proj,)
+                ).fetchone()
+                acct_key = acct_row["account"] if acct_row else "all"
+                insert_insight(conn, acct_key, proj, "subagent_cost_spike", msg, detail)
+                generated += 1
+    except Exception:
+        pass
+
+    # ── 13. FLOUNDERING_DETECTED ──
+    try:
+        floundering_rows = conn.execute(
+            "SELECT project, account, COUNT(*) AS n, SUM(token_cost) AS wasted "
+            "FROM waste_events WHERE pattern_type='floundering' "
+            "  AND detected_at >= ? "
+            "GROUP BY project, account",
+            (_days_ago(7),),
+        ).fetchall()
+        for r in floundering_rows:
+            proj = r["project"] or "Other"
+            if _insight_exists_recent(conn, "floundering_detected", proj):
+                continue
+            n = r["n"] or 0
+            wasted = r["wasted"] or 0
+            msg = (f"{proj} has {n} floundering session{'s' if n != 1 else ''} — "
+                   f"Claude stuck retrying the same tool (~${wasted:.2f} at risk)")
+            detail = json.dumps({"count": n, "estimated_waste_usd": round(wasted, 4)})
+            insert_insight(conn, r["account"] or "all", proj,
+                           "floundering_detected", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
+    # ── 14. DAILY_BUDGET alerts (exceeded + warning) ──
+    try:
+        from analyzer import daily_budget_metrics as _daily_budget_metrics
+        dbm = _daily_budget_metrics(conn, "all")
+        for acct_id, b in dbm.items():
+            if not b.get("has_budget"):
+                continue
+            label = ACCOUNTS.get(acct_id, {}).get("label", acct_id)
+            cost = b["today_cost"]
+            limit = b["budget_usd"]
+            pct = b["budget_pct"]
+            if cost > limit:
+                if not _insight_exists_recent(conn, "budget_exceeded", acct_id, hours=6):
+                    over = cost - limit
+                    msg = (f"{label} exceeded daily budget — ${cost:.2f} spent vs "
+                           f"${limit:.2f} limit (${over:.2f} over). Slow down or switch to Sonnet.")
+                    detail = json.dumps({"today_cost": cost, "budget": limit, "over": over})
+                    insert_insight(conn, acct_id, acct_id, "budget_exceeded", msg, detail)
+                    generated += 1
+            elif pct > 80:
+                if not _insight_exists_recent(conn, "budget_warning", acct_id, hours=6):
+                    proj_daily = b["projected_daily"]
+                    msg = (f"{label} at {pct:.0f}% of daily budget — projected "
+                           f"${proj_daily:.2f} vs ${limit:.2f} limit")
+                    detail = json.dumps({"pct": pct, "projected": proj_daily, "budget": limit})
+                    insert_insight(conn, acct_id, acct_id, "budget_warning", msg, detail)
+                    generated += 1
+    except Exception:
+        pass
+
     conn.commit()
     if should_close:
         conn.close()

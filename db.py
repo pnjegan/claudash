@@ -98,6 +98,8 @@ def init_db():
         ("compaction_detected", "INTEGER DEFAULT 0"),
         ("tokens_before_compact", "INTEGER"),
         ("tokens_after_compact", "INTEGER"),
+        ("is_subagent", "INTEGER DEFAULT 0"),
+        ("parent_session_id", "TEXT"),
     ]:
         if not _column_exists(conn, "sessions", col):
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
@@ -185,6 +187,58 @@ def init_db():
             keywords TEXT,
             UNIQUE(account_id, project_name)
         );
+    """)
+
+    # --- Account daily budget column ---
+    if not _column_exists(conn, "accounts", "daily_budget_usd"):
+        conn.execute("ALTER TABLE accounts ADD COLUMN daily_budget_usd REAL DEFAULT 0")
+
+    # --- Waste events (waste_patterns.py) ---
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS waste_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            project TEXT,
+            account TEXT,
+            pattern_type TEXT,
+            severity TEXT,
+            turn_count INTEGER,
+            token_cost REAL,
+            detected_at INTEGER,
+            detail_json TEXT,
+            UNIQUE(session_id, pattern_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_waste_project ON waste_events(project);
+        CREATE INDEX IF NOT EXISTS idx_waste_detected ON waste_events(detected_at);
+        CREATE INDEX IF NOT EXISTS idx_waste_pattern ON waste_events(pattern_type);
+    """)
+
+    # --- Fix tracker (fix_tracker.py) ---
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS fixes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at INTEGER,
+            project TEXT,
+            waste_pattern TEXT,
+            title TEXT,
+            fix_type TEXT,
+            fix_detail TEXT,
+            baseline_json TEXT,
+            status TEXT DEFAULT 'applied'
+        );
+        CREATE INDEX IF NOT EXISTS idx_fixes_project ON fixes(project);
+        CREATE INDEX IF NOT EXISTS idx_fixes_created ON fixes(created_at);
+
+        CREATE TABLE IF NOT EXISTS fix_measurements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fix_id INTEGER REFERENCES fixes(id),
+            measured_at INTEGER,
+            metrics_json TEXT,
+            delta_json TEXT,
+            verdict TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_fm_fix ON fix_measurements(fix_id);
+        CREATE INDEX IF NOT EXISTS idx_fm_measured ON fix_measurements(measured_at);
     """)
 
     # --- claude.ai browser tracking tables ---
@@ -349,6 +403,10 @@ def get_accounts_config(conn=None):
         # Expand ~ in paths
         paths = [os.path.expanduser(p) for p in paths]
 
+        try:
+            budget = r["daily_budget_usd"] or 0
+        except (IndexError, KeyError):
+            budget = 0
         result[r["account_id"]] = {
             "label": r["label"],
             "type": r["plan"],
@@ -357,6 +415,7 @@ def get_accounts_config(conn=None):
             "window_token_limit": r["window_token_limit"] or 1_000_000,
             "color": r["color"] or "teal",
             "data_paths": paths,
+            "daily_budget_usd": budget,
         }
     return result
 
@@ -425,11 +484,12 @@ def create_account(conn, data):
 
     conn.execute(
         """INSERT INTO accounts
-           (account_id, label, plan, monthly_cost_usd, window_token_limit, color, data_paths, active, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+           (account_id, label, plan, monthly_cost_usd, window_token_limit, color, data_paths, active, created_at, daily_budget_usd)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
         (account_id, label, data.get("plan", "max"),
          data.get("monthly_cost_usd", 0), data.get("window_token_limit", 1_000_000),
-         data.get("color", "teal"), json.dumps(data_paths), int(time.time())),
+         data.get("color", "teal"), json.dumps(data_paths), int(time.time()),
+         float(data.get("daily_budget_usd", 0) or 0)),
     )
     conn.commit()
     return True, ""
@@ -443,7 +503,7 @@ def update_account(conn, account_id, data):
 
     updates = []
     params = []
-    for field in ("label", "plan", "monthly_cost_usd", "window_token_limit", "color"):
+    for field in ("label", "plan", "monthly_cost_usd", "window_token_limit", "color", "daily_budget_usd"):
         if field in data:
             updates.append(f"{field} = ?")
             params.append(data[field])
@@ -493,6 +553,10 @@ def get_all_accounts(conn):
                 pass
             proj_list.append({"project_name": p["project_name"], "keywords": kw})
 
+        try:
+            budget = a["daily_budget_usd"] or 0
+        except (IndexError, KeyError):
+            budget = 0
         result.append({
             "account_id": a["account_id"],
             "label": a["label"],
@@ -503,6 +567,7 @@ def get_all_accounts(conn):
             "data_paths": paths,
             "active": a["active"],
             "created_at": a["created_at"],
+            "daily_budget_usd": budget,
             "projects": proj_list,
         })
     return result
@@ -560,8 +625,9 @@ def insert_session(conn, row):
                (session_id, timestamp, project, account, model,
                 input_tokens, output_tokens, cache_read_tokens,
                 cache_creation_tokens, cost_usd, source_path,
-                compaction_detected, tokens_before_compact, tokens_after_compact)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                compaction_detected, tokens_before_compact, tokens_after_compact,
+                is_subagent, parent_session_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["session_id"], row["timestamp"], row["project"],
                 row["account"], row["model"], row["input_tokens"],
@@ -571,11 +637,113 @@ def insert_session(conn, row):
                 row.get("compaction_detected", 0),
                 row.get("tokens_before_compact"),
                 row.get("tokens_after_compact"),
+                row.get("is_subagent", 0),
+                row.get("parent_session_id"),
             ),
         )
         return conn.total_changes > 0
     except sqlite3.Error:
         return False
+
+
+def insert_waste_event(conn, session_id, project, account, pattern_type, severity,
+                       turn_count, token_cost, detail=None):
+    """UPSERT a waste_events row. Idempotent on (session_id, pattern_type)."""
+    import time as _t
+    conn.execute(
+        """INSERT INTO waste_events
+           (session_id, project, account, pattern_type, severity,
+            turn_count, token_cost, detected_at, detail_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(session_id, pattern_type) DO UPDATE SET
+             severity=excluded.severity,
+             turn_count=excluded.turn_count,
+             token_cost=excluded.token_cost,
+             detected_at=excluded.detected_at,
+             detail_json=excluded.detail_json""",
+        (session_id, project, account, pattern_type, severity,
+         turn_count, token_cost, int(_t.time()), json.dumps(detail or {})),
+    )
+
+
+def clear_waste_events(conn):
+    conn.execute("DELETE FROM waste_events")
+
+
+def get_waste_events_by_project(conn, days=7):
+    since = int(time.time()) - (days * 86400)
+    rows = conn.execute(
+        "SELECT * FROM waste_events WHERE detected_at >= ?",
+        (since,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_account_daily_budget(conn, account_id, budget_usd):
+    conn.execute(
+        "UPDATE accounts SET daily_budget_usd=? WHERE account_id=?",
+        (float(budget_usd or 0), account_id),
+    )
+    conn.commit()
+
+
+# ── Fix tracker CRUD ─────────────────────────────────────────────
+
+def insert_fix(conn, project, waste_pattern, title, fix_type, fix_detail, baseline_json):
+    cursor = conn.execute(
+        """INSERT INTO fixes
+           (created_at, project, waste_pattern, title, fix_type,
+            fix_detail, baseline_json, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'applied')""",
+        (int(time.time()), project, waste_pattern, title, fix_type,
+         fix_detail, json.dumps(baseline_json)),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_fix(conn, fix_id):
+    row = conn.execute("SELECT * FROM fixes WHERE id = ?", (fix_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_fixes(conn):
+    """Return every fix row ordered most-recent first."""
+    rows = conn.execute("SELECT * FROM fixes ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_fix_status(conn, fix_id, status):
+    conn.execute("UPDATE fixes SET status = ? WHERE id = ?", (status, fix_id))
+    conn.commit()
+
+
+def insert_fix_measurement(conn, fix_id, metrics_json, delta_json, verdict):
+    cursor = conn.execute(
+        """INSERT INTO fix_measurements
+           (fix_id, measured_at, metrics_json, delta_json, verdict)
+           VALUES (?, ?, ?, ?, ?)""",
+        (fix_id, int(time.time()), json.dumps(metrics_json),
+         json.dumps(delta_json), verdict),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_fix_measurements(conn, fix_id):
+    rows = conn.execute(
+        "SELECT * FROM fix_measurements WHERE fix_id = ? ORDER BY measured_at",
+        (fix_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_fix_measurement(conn, fix_id):
+    row = conn.execute(
+        "SELECT * FROM fix_measurements WHERE fix_id = ? ORDER BY measured_at DESC LIMIT 1",
+        (fix_id,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def insert_alert(conn, level, project, message):
@@ -844,3 +1012,140 @@ def set_setting(conn, key, value):
         (key, value),
     )
     conn.commit()
+
+
+def get_real_story_insights():
+    """Compute verified story cards from actual DB data. Returns a list of dicts."""
+    conn = get_conn()
+    stories = []
+    now = int(time.time())
+    cutoff_30d = now - 30 * 86400
+    cutoff_14d = now - 14 * 86400
+    total_analyzed = conn.execute(
+        "SELECT COUNT(*) FROM sessions WHERE timestamp > ?", (cutoff_30d,)
+    ).fetchone()[0]
+
+    # STORY 1 — Model mismatch: Opus doing Sonnet-level work
+    rows = conn.execute(
+        "SELECT project, AVG(output_tokens) as avg_out, COUNT(*) as sessions "
+        "FROM sessions "
+        "WHERE model LIKE '%opus%' AND timestamp > ? "
+        "GROUP BY project "
+        "HAVING avg_out < 300 AND sessions > 100 "
+        "ORDER BY sessions DESC",
+        (cutoff_30d,),
+    ).fetchall()
+    for r in rows:
+        stories.append({
+            "type": "model_mismatch", "badge": "Model Mismatch",
+            "title": f"{r['project']}: Opus doing Sonnet-level work",
+            "finding": (
+                f"{r['sessions']} sessions, avg {int(r['avg_out'])} tokens output — "
+                f"Opus costs 5x Sonnet for same output"
+            ),
+            "what_to_do": "Add to CLAUDE.md: use claude-sonnet for tasks with short expected outputs",
+            "action": "Switch to claude-sonnet for short-output tasks",
+            "verified": True,
+            "sessions_analyzed": r["sessions"],
+        })
+
+    # STORY 2 — Floundering (repeated tool failures)
+    rows = conn.execute(
+        "SELECT project, COUNT(*) as events "
+        "FROM waste_events "
+        "WHERE pattern_type = 'floundering' AND detected_at > ? "
+        "GROUP BY project "
+        "HAVING events > 5 "
+        "ORDER BY events DESC LIMIT 3",
+        (cutoff_30d,),
+    ).fetchall()
+    for r in rows:
+        stories.append({
+            "type": "floundering_detected", "badge": "Got Stuck",
+            "title": f"{r['project']}: Claude got stuck {r['events']} times",
+            "finding": (
+                f"Detected {r['events']} sessions where the same tool call "
+                f"failed 3+ times consecutively"
+            ),
+            "what_to_do": "Add to CLAUDE.md: after 3 failed tool calls of same type, skip and log",
+            "action": "After 3 failed tool calls, stop and skip — never retry blindly",
+            "verified": True,
+            "sessions_analyzed": r["events"],
+        })
+
+    # STORY 3 — Repeated reads
+    rows = conn.execute(
+        "SELECT project, COUNT(*) as events "
+        "FROM waste_events "
+        "WHERE pattern_type = 'repeated_reads' AND detected_at > ? "
+        "GROUP BY project "
+        "HAVING events > 3 "
+        "ORDER BY events DESC LIMIT 3",
+        (cutoff_30d,),
+    ).fetchall()
+    for r in rows:
+        stories.append({
+            "type": "repeated_reads", "badge": "Repeated Reads",
+            "title": f"{r['project']}: Same files read {r['events']} times",
+            "finding": (
+                f"Detected {r['events']} sessions where the same file was "
+                f"read 3+ times in a single session"
+            ),
+            "what_to_do": "Add to CLAUDE.md: read a file once, store key info, do not re-read",
+            "action": "Read each file once at session start. Pass summaries between phases.",
+            "verified": True,
+            "sessions_analyzed": r["events"],
+        })
+
+    # STORY 4 — Subagent cost spike
+    row = conn.execute(
+        "SELECT parent_session_id, project, "
+        "  COUNT(*) as subagent_count, "
+        "  SUM(cost_usd) as subagent_cost "
+        "FROM sessions "
+        "WHERE is_subagent = 1 AND timestamp > ? "
+        "GROUP BY parent_session_id "
+        "HAVING subagent_count > 5 "
+        "ORDER BY subagent_cost DESC LIMIT 1",
+        (cutoff_30d,),
+    ).fetchone()
+    if row and row["subagent_count"]:
+        stories.append({
+            "type": "subagent_spike", "badge": "Sub-agent Spike",
+            "title": f"{row['project']}: One session spawned {row['subagent_count']} sub-agents",
+            "finding": (
+                f"Single parent session created {row['subagent_count']} sub-agents "
+                f"costing ${row['subagent_cost']:.2f} API equivalent — "
+                f"invisible without sub-agent tracking"
+            ),
+            "what_to_do": "Add max sub-agent limit to your agent orchestration",
+            "verified": True,
+            "sessions_analyzed": row["subagent_count"],
+        })
+
+    # STORY 5 — Daily cost spike
+    daily_rows = conn.execute(
+        "SELECT date(timestamp, 'unixepoch') as day, SUM(cost_usd) as daily_cost "
+        "FROM sessions WHERE timestamp > ? "
+        "GROUP BY day ORDER BY daily_cost DESC",
+        (cutoff_14d,),
+    ).fetchall()
+    if len(daily_rows) >= 3:
+        avg_daily = sum(r["daily_cost"] for r in daily_rows) / len(daily_rows)
+        top = daily_rows[0]
+        if avg_daily > 0 and top["daily_cost"] > 3 * avg_daily:
+            multiplier = round(top["daily_cost"] / avg_daily, 1)
+            stories.append({
+                "type": "cost_spike_day",
+                "title": f"{top['day'][5:]}: {multiplier}x your normal daily spend",
+                "finding": (
+                    f"Highest day was ${top['daily_cost']:.2f} API equiv — "
+                    f"{multiplier}x your 14-day average of ${avg_daily:.2f}"
+                ),
+                "what_to_do": "Check what ran that day. Add daily budget alerts to catch this earlier.",
+                "verified": True,
+                "sessions_analyzed": total_analyzed,
+            })
+
+    conn.close()
+    return stories

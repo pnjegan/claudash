@@ -42,32 +42,40 @@ ACCOUNTS = {
     },
 }
 
-PROJECT_MAP = {
-    "WikiLoop":    {"keywords": ["wikiloop", "wiki-loop", "wiki_loop",
-                                 "-root-wikiloop"],
-                    "account": "personal_max"},
-    "Tidify":      {"keywords": ["tidify", "-root-projects-tidify"],
-                    "account": "personal_max"},
-    "CashKoda":    {"keywords": ["cashkoda", "cash-koda"],
-                    "account": "personal_max"},
-    "SpiralSpeak": {"keywords": ["spiralspeak", "spiral-speak"],
-                    "account": "personal_max"},
-    "CareLink":    {"keywords": ["carelink", "care-link", "medicotix"],
-                    "account": "personal_max"},
-    "CCAF":        {"keywords": ["ccaf", "exam", "certification"],
-                    "account": "personal_max"},
-    "Claudash":    {"keywords": ["cladash", "jk-usage", "-root-cladash"],
-                    "account": "personal_max"},
-    "Brainworks":  {"keywords": ["brainworks", "-root-projects-brainworks"],
-                    "account": "personal_max"},
-    "Knowl":       {"keywords": ["knowl", "-root-newprojects-knowl"],
-                    "account": "personal_max"},
-    "CareerOps":   {"keywords": ["career", "resume", "resumestiffs",
-                                 "-root-resumestiffs"],
-                    "account": "personal_max"},
-}
+# ─── Project Map ─────────────────────────────────────────────────
+# Maps folder-name keywords → project labels. Claudash walks the JSONL
+# folder paths under each account's data_paths and looks for any of
+# these substrings (case-insensitive) in the path.
+#
+# Empty on a fresh install — add your own. Example:
+#
+#   PROJECT_MAP = {
+#       "MyProject":  {"keywords": ["myproject", "-root-myproject"],
+#                      "account": "personal_max"},
+#       "ClientWork": {"keywords": ["acme", "client-a"],
+#                      "account": "personal_max"},
+#   }
+#
+# The DB is the live source of truth after first run. Edits here only
+# take effect on `cli.py scan --reprocess` (which UPSERTs into the
+# account_projects table).
+
+PROJECT_MAP = {}
 
 UNKNOWN_PROJECT = "Other"
+
+# ─── Daily budget per account (USD, API-equivalent) ──────────────
+# Set per account_id. Claudash compares today's cost to this value
+# and fires BUDGET_WARNING / BUDGET_EXCEEDED insights.
+# Set to 0 (or omit an account) to disable budget tracking.
+#
+# Example:
+#   DAILY_BUDGET_USD = {
+#       "personal_max": 20.0,
+#       "work_pro":      5.0,
+#   }
+
+DAILY_BUDGET_USD = {}
 
 # Per million tokens, USD
 MODEL_PRICING = {
@@ -79,13 +87,14 @@ MODEL_PRICING = {
 # Window settings per plan
 MAX_WINDOW_HOURS = 5
 
-# claude.ai web chat accounts — fill in session_key and org_id
-CLAUDE_AI_ACCOUNTS = [
-    {"label": "Personal Max", "session_key": "", "org_id": ""},
-    {"label": "Work Pro",     "session_key": "", "org_id": ""},
-]
+# claude.ai web chat accounts — add yours here if using mac-sync.py browser tracking.
+# Example:
+#   CLAUDE_AI_ACCOUNTS = [
+#       {"label": "Personal Max", "session_key": "", "org_id": ""},
+#   ]
+CLAUDE_AI_ACCOUNTS = []
 
-# Cost targets per project (for insights)
-COST_TARGETS = {
-    "Tidify": 0.07,
-}
+# Cost targets per project (for insights).
+# Example:
+#   COST_TARGETS = {"MyProject": 0.10}
+COST_TARGETS = {}

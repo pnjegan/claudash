@@ -570,6 +570,108 @@ def record_window_burn(conn, account="personal_max"):
     conn.commit()
 
 
+# ── Sub-agent metrics ──
+
+def subagent_metrics(conn, account="all"):
+    """Per-project subagent cost rollup. Returns a dict keyed by project
+    with subagent_session_count, subagent_cost_usd, subagent_pct_of_total,
+    and the top 5 spawning parent sessions by subagent cost."""
+    acct_filter = None if account == "all" else account
+    params = []
+    where = "1=1"
+    if acct_filter:
+        where += " AND account = ?"
+        params.append(acct_filter)
+
+    # Per-project rollup
+    proj_rows = conn.execute(
+        f"SELECT project, "
+        f"       SUM(CASE WHEN is_subagent=1 THEN cost_usd ELSE 0 END) AS sub_cost, "
+        f"       SUM(CASE WHEN is_subagent=1 THEN 1 ELSE 0 END) AS sub_rows, "
+        f"       SUM(cost_usd) AS total_cost, "
+        f"       COUNT(DISTINCT CASE WHEN is_subagent=1 THEN session_id END) AS sub_sessions "
+        f"FROM sessions WHERE {where} GROUP BY project",
+        params,
+    ).fetchall()
+
+    result = {}
+    for r in proj_rows:
+        total = r["total_cost"] or 0
+        sub_cost = r["sub_cost"] or 0
+        pct = (sub_cost / total * 100) if total > 0 else 0
+        result[r["project"]] = {
+            "subagent_session_count": r["sub_sessions"] or 0,
+            "subagent_cost_usd": round(sub_cost, 4),
+            "subagent_pct_of_total": round(pct, 1),
+            "top_spawning_sessions": [],
+        }
+
+    # Top 5 spawning parents (per project) — parents ordered by subagent cost
+    top_rows = conn.execute(
+        f"SELECT project, parent_session_id, "
+        f"       COUNT(DISTINCT session_id) AS spawned, "
+        f"       SUM(cost_usd) AS cost "
+        f"FROM sessions "
+        f"WHERE is_subagent = 1 AND parent_session_id IS NOT NULL "
+        f"  AND {where.replace('1=1', 'project IS NOT NULL')} "
+        f"GROUP BY project, parent_session_id "
+        f"ORDER BY cost DESC",
+        params,
+    ).fetchall()
+    buckets = {}
+    for r in top_rows:
+        p = r["project"]
+        if p not in buckets:
+            buckets[p] = []
+        if len(buckets[p]) < 5:
+            buckets[p].append({
+                "parent_session_id": r["parent_session_id"],
+                "subagents_spawned": r["spawned"],
+                "cost_usd": round(r["cost"] or 0, 4),
+            })
+    for p, lst in buckets.items():
+        if p in result:
+            result[p]["top_spawning_sessions"] = lst
+
+    return result
+
+
+# ── Daily budget metrics ──
+
+def daily_budget_metrics(conn, account="all"):
+    """Per-account today-vs-budget rollup. Returns dict keyed by account_id
+    with today_cost, budget_usd, budget_pct, budget_remaining,
+    projected_daily, on_track."""
+    ACCOUNTS = get_accounts_config(conn)
+    # Today midnight UTC → epoch
+    now_dt = datetime.now(timezone.utc)
+    midnight = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight_epoch = int(midnight.timestamp())
+    hours_elapsed = max((now_dt - midnight).total_seconds() / 3600.0, 0.1)
+
+    result = {}
+    keys = ACCOUNTS.keys() if account == "all" else [account]
+    for acct_id in keys:
+        info = ACCOUNTS.get(acct_id, {})
+        budget = float(info.get("daily_budget_usd") or 0)
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM sessions WHERE account=? AND timestamp >= ?",
+            (acct_id, midnight_epoch),
+        ).fetchone()
+        today_cost = row["cost"] or 0
+        projected = (today_cost / hours_elapsed) * 24 if hours_elapsed > 0 else today_cost
+        result[acct_id] = {
+            "today_cost": round(today_cost, 4),
+            "budget_usd": round(budget, 2),
+            "budget_pct": round((today_cost / budget * 100) if budget > 0 else 0, 1),
+            "budget_remaining": round(max(budget - today_cost, 0), 4) if budget > 0 else 0,
+            "projected_daily": round(projected, 4),
+            "on_track": (projected <= budget) if budget > 0 else True,
+            "has_budget": budget > 0,
+        }
+    return result
+
+
 # ── Full analysis ──
 
 def full_analysis(conn, account="all"):
@@ -601,6 +703,15 @@ def full_analysis(conn, account="all"):
     accounts_list = [{"account_id": k, "label": v["label"], "color": v.get("color", "teal")}
                      for k, v in ACCOUNTS.items()]
 
+    # Sub-agent rollup, daily budget, waste summary
+    sub_metrics = subagent_metrics(conn, account)
+    budget_metrics = daily_budget_metrics(conn, account)
+    try:
+        from waste_patterns import waste_summary_by_project
+        waste_summary = waste_summary_by_project(conn, days=7)
+    except Exception:
+        waste_summary = {}
+
     return {
         "account": account,
         "account_label": ACCOUNTS.get(account, {}).get("label", "All Accounts"),
@@ -613,5 +724,8 @@ def full_analysis(conn, account="all"):
         "trends": trends,
         "insights_count": len(active_insights),
         "accounts_list": accounts_list,
+        "subagent_metrics": sub_metrics,
+        "daily_budget": budget_metrics,
+        "waste_summary": waste_summary,
         "generated_at": _now(),
     }

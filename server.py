@@ -3,6 +3,7 @@ import os
 import sys
 import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from db import (
@@ -18,6 +19,7 @@ from db import (
     get_setting,
     upsert_claude_ai_account, update_claude_ai_account_status,
     insert_claude_ai_snapshot,
+    get_real_story_insights,
 )
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -109,6 +111,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "accounts_active": list(accounts.keys()),
             })
 
+        elif path == "/api/real-story":
+            import time as _time
+            stories = get_real_story_insights()
+            conn = get_conn()
+            total = get_session_count(conn)
+            conn.close()
+            self._serve_json({
+                "stories": stories,
+                "generated_at": int(_time.time()),
+                "sessions_analyzed": total,
+                "date_range_days": 30,
+            })
+
         # ── Account management GET endpoints ──
         elif path == "/api/accounts":
             conn = get_conn()
@@ -173,6 +188,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/tools/mac-sync.py":
             self._serve_mac_sync()
+
+        # ── Fix tracker GET endpoints ──
+        elif path == "/api/fixes":
+            from fix_tracker import all_fixes_with_latest
+            conn = get_conn()
+            data = all_fixes_with_latest(conn)
+            conn.close()
+            self._serve_json(data)
+
+        elif re.match(r"^/api/fixes/(\d+)$", path):
+            m = re.match(r"^/api/fixes/(\d+)$", path)
+            fix_id = int(m.group(1))
+            from fix_tracker import fix_with_latest
+            conn = get_conn()
+            data = fix_with_latest(conn, fix_id)
+            conn.close()
+            if data is None:
+                self._serve_json({"error": "fix not found"}, 404)
+            else:
+                self._serve_json(data)
+
+        elif re.match(r"^/api/fixes/(\d+)/share-card$", path):
+            m = re.match(r"^/api/fixes/(\d+)/share-card$", path)
+            fix_id = int(m.group(1))
+            from db import get_fix, get_latest_fix_measurement
+            from fix_tracker import build_share_card
+            conn = get_conn()
+            fix = get_fix(conn, fix_id)
+            latest = get_latest_fix_measurement(conn, fix_id) if fix else None
+            conn.close()
+            if not fix:
+                self._serve_json({"error": "fix not found"}, 404)
+            else:
+                text = build_share_card(fix, latest)
+                body = text.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
         else:
             self.send_error(404)
@@ -280,6 +336,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/claude-ai/sync":
             self._handle_sync(body or {})
 
+        # ── Fix tracker POST endpoints ──
+        elif path == "/api/fixes":
+            data = body or {}
+            project = (data.get("project") or "").strip()
+            if not project:
+                self._serve_json({"success": False, "error": "project is required"}, 400)
+                return
+            from fix_tracker import record_fix
+            conn = get_conn()
+            try:
+                fix_id, baseline = record_fix(
+                    conn,
+                    project,
+                    data.get("waste_pattern") or "custom",
+                    (data.get("title") or "").strip(),
+                    data.get("fix_type") or "other",
+                    data.get("fix_detail") or "",
+                )
+            finally:
+                conn.close()
+            self._serve_json({
+                "success": True,
+                "fix_id": fix_id,
+                "baseline": baseline,
+                "message": "Fix recorded. Check back in 7 days to measure improvement.",
+            })
+
+        elif re.match(r"^/api/fixes/(\d+)/measure$", path):
+            m = re.match(r"^/api/fixes/(\d+)/measure$", path)
+            fix_id = int(m.group(1))
+            from fix_tracker import measure_fix
+            conn = get_conn()
+            try:
+                delta, verdict, metrics = measure_fix(conn, fix_id)
+            finally:
+                conn.close()
+            if delta is None:
+                self._serve_json({"success": False, "error": "fix not found"}, 404)
+            else:
+                msg = {
+                    "improving": "Fix is working. Keep it in place.",
+                    "worsened": "Fix regressed. Consider reverting or iterating.",
+                    "neutral": "No statistically meaningful change yet.",
+                    "insufficient_data": "Not enough sessions since fix — give it more time.",
+                }.get(verdict, "Measurement recorded.")
+                self._serve_json({
+                    "success": True,
+                    "delta": delta,
+                    "verdict": verdict,
+                    "message": msg,
+                })
+
         else:
             self.send_error(404)
 
@@ -351,14 +459,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn.close()
             self._serve_json({"success": True})
 
+        elif re.match(r"^/api/fixes/(\d+)$", path):
+            m = re.match(r"^/api/fixes/(\d+)$", path)
+            fix_id = int(m.group(1))
+            from db import update_fix_status, get_fix
+            conn = get_conn()
+            try:
+                fix = get_fix(conn, fix_id)
+                if not fix:
+                    self._serve_json({"success": False, "error": "fix not found"}, 404)
+                    return
+                update_fix_status(conn, fix_id, "reverted")
+            finally:
+                conn.close()
+            self._serve_json({"success": True})
+
         else:
             self.send_error(404)
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Dashboard-Key, X-Sync-Token")
         self.end_headers()
 
     def _read_body(self):
@@ -398,11 +521,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(500, f"{filename} not found")
 
+    def _cors_origin(self):
+        return "http://127.0.0.1:8080"
+
     def _serve_json(self, data, status=200):
         body = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.end_headers()
         self.wfile.write(body)
 
@@ -513,6 +639,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = full_analysis(conn, account)
         data["last_scan"] = get_last_scan_time()
         data["total_rows"] = get_session_count(conn)
+        if data["total_rows"] == 0:
+            data["first_run"] = True
+            data["first_run_message"] = (
+                "No sessions found. "
+                "Run: python3 cli.py scan\n"
+                "Then check that ~/.claude/projects/ contains JSONL files."
+            )
         data["db_size_mb"] = get_db_size_mb()
         # claude.ai browser tracking data
         browser_accounts = get_claude_ai_accounts_all(conn)
@@ -541,7 +674,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def start_server(port=8080):
-    server = HTTPServer(("127.0.0.1", port), DashboardHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
     print(f"Dashboard: http://127.0.0.1:{port} (localhost only)", flush=True)
     try:
         server.serve_forever()

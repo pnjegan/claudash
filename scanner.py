@@ -158,9 +158,33 @@ def _set_scan_state(conn, filepath, offset, lines_processed):
     )
 
 
+def _parse_subagent_info(filepath):
+    """If the file lives under a `/subagents/` directory, return
+    (is_subagent=1, parent_session_id), else (0, None).
+
+    Expected shape: .../<parent_session_uuid>/subagents/agent-*.jsonl
+    The parent's session UUID is the folder immediately above `subagents`.
+    """
+    if "/subagents/" not in filepath:
+        return 0, None
+    parent_dir = filepath.split("/subagents/")[0]
+    parent_uuid = os.path.basename(parent_dir)
+    return 1, (parent_uuid or None)
+
+
 def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=None):
     """Parse new lines from a JSONL file using incremental offset tracking."""
-    project, account = resolve_project(folder_path, project_map)
+    # For subagent files, resolve project from the *parent* project folder
+    # (the grandparent of `subagents/`) so the subagent inherits the parent's
+    # project tag even if the `subagents` directory itself has no matching
+    # keyword.
+    is_subagent, parent_sid = _parse_subagent_info(filepath)
+    resolve_against = folder_path
+    if is_subagent:
+        parent_project_folder = filepath.split("/subagents/")[0]
+        parent_project_folder = os.path.dirname(parent_project_folder)
+        resolve_against = parent_project_folder or folder_path
+    project, account = resolve_project(resolve_against, project_map)
 
     try:
         file_size = os.path.getsize(filepath)
@@ -195,6 +219,8 @@ def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=Non
                     # a session row, and every session from one data_path looks
                     # identical. scan_state tracks the same key.
                     parsed["source_path"] = filepath
+                    parsed["is_subagent"] = is_subagent
+                    parsed["parent_session_id"] = parent_sid
                     raw_rows.append(parsed)
             end_offset = f.tell()
     except Exception as e:

@@ -4,6 +4,7 @@
 import sys
 import os
 import csv
+import json
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -13,7 +14,7 @@ from config import VPS_IP, VPS_PORT
 from db import (
     init_db, get_conn, get_insights, get_session_count, get_db_size_mb,
     get_accounts_config, get_claude_ai_accounts_all, get_latest_claude_ai_snapshot,
-    get_setting, get_project_map_config, sync_project_map_from_config,
+    get_setting, set_setting, get_project_map_config, sync_project_map_from_config,
 )
 
 
@@ -31,7 +32,14 @@ Commands:
   insights      Show active insights
   window        Show 5-hour window status
   export        Export last 30 days to CSV
+  waste         Run waste-pattern detection and print summary
+  fixes         List all recorded fixes with current status
+  fix add       Interactively record a new fix (captures baseline)
+  measure <id>  Capture current metrics for a fix, compute delta, print
+                a plan-aware verdict and share card
+  mcp           Print MCP server settings.json snippet + run a quick test
   keys          Print dashboard_key and sync_token (sensitive — keep private)
+  keys --rotate Regenerate dashboard_key (invalidates existing browser sessions)
   claude-ai     Show claude.ai browser tracking status
   claude-ai --sync-token          Print sync token (for tools/mac-sync.py)
   claude-ai --setup <account_id>  Paste a claude.ai session key interactively
@@ -95,12 +103,477 @@ def cmd_dashboard():
 
 
 def cmd_scan():
+    # `scan --reprocess` re-tags every existing session row from source JSONL
+    # without re-reading file offsets. It's the fix for "I added a new project
+    # to config.py but my old sessions still say Other".
+    if "--reprocess" in sys.argv:
+        cmd_scan_reprocess()
+        return
     init_db()
     rows = scan_all()
     conn = get_conn()
     n = generate_insights(conn)
+    # Waste-pattern detection after every scan
+    try:
+        from waste_patterns import detect_all as _detect_waste
+        waste_summary = _detect_waste(conn)
+    except Exception as e:
+        waste_summary = {"error": str(e)}
     conn.close()
     print(f"Scan complete: {rows} new rows (incremental), {n} insights generated")
+    if isinstance(waste_summary, dict) and "error" not in waste_summary:
+        parts = [f"{k}={v}" for k, v in waste_summary.items() if v]
+        if parts:
+            print(f"Waste patterns: {', '.join(parts)}")
+
+
+def cmd_waste():
+    """Run waste-pattern detection standalone and print a summary."""
+    init_db()
+    conn = get_conn()
+    from waste_patterns import detect_all as _detect_waste
+    summary = _detect_waste(conn)
+    print()
+    print("  Waste patterns detected (last scan)")
+    print(f"  {'-' * 40}")
+    for k, v in summary.items():
+        print(f"  {k:<20} {v:>6}")
+    print()
+    rows = conn.execute(
+        "SELECT project, pattern_type, COUNT(*) AS n, SUM(token_cost) AS cost "
+        "FROM waste_events GROUP BY project, pattern_type ORDER BY cost DESC LIMIT 10"
+    ).fetchall()
+    if rows:
+        print("  Top waste events by estimated cost:")
+        print(f"  {'Project':<18} {'Pattern':<18} {'Count':>6} {'$Cost':>10}")
+        print(f"  {'-' * 56}")
+        for r in rows:
+            print(f"  {str(r[0] or '-'):<18} {str(r[1] or '-'):<18} "
+                  f"{(r[2] or 0):>6} ${(r[3] or 0):>9.2f}")
+        print()
+    conn.close()
+
+
+def _fmt_fix_header(f):
+    dt = datetime.fromtimestamp(f["created_at"], tz=timezone.utc).strftime("%b %d")
+    return f"#{f['id']:<3} {f['project']} · {f['waste_pattern']} · {f['title']}  (applied {dt})"
+
+
+def _fmt_status_badge(status):
+    return {
+        "applied": "measuring",
+        "measuring": "measuring",
+        "confirmed": "confirmed ✓",
+        "reverted": "reverted",
+    }.get(status, status)
+
+
+def cmd_fixes():
+    """List all recorded fixes with current status."""
+    init_db()
+    conn = get_conn()
+    from fix_tracker import all_fixes_with_latest
+    fixes = all_fixes_with_latest(conn)
+    conn.close()
+
+    print()
+    if not fixes:
+        print("  Fix Tracker — no fixes recorded yet")
+        print()
+        print("  Start by recording one:")
+        print("    python3 cli.py fix add")
+        print()
+        return
+
+    print(f"  Fix Tracker — {len(fixes)} fix{'es' if len(fixes) != 1 else ''} recorded")
+    print(f"  {'─' * 60}")
+    now = int(time.time())
+    for f in fixes:
+        baseline = f.get("baseline") or {}
+        plan = baseline.get("plan_type", "max")
+        days_elapsed = max(int((now - (f["created_at"] or now)) / 86400), 0)
+        status_txt = _fmt_status_badge(f["status"])
+        print(f"  #{f['id']:<3} {f['project']} · {f['waste_pattern']} · {f['title']}")
+        print(f"       applied {datetime.fromtimestamp(f['created_at'], tz=timezone.utc).strftime('%b %d')} · "
+              f"status: {status_txt} · {days_elapsed}d elapsed")
+
+        latest = f.get("latest")
+        if f["status"] == "confirmed" and latest:
+            delta = latest.get("delta", {})
+            waste = delta.get("waste_events", {})
+            eff = delta.get("effective_window_pct", {})
+            cost = delta.get("avg_cost_per_session", {})
+            wb = waste.get("before", 0); wa = waste.get("after", 0); wp = waste.get("pct_change", 0)
+            if plan in ("max", "pro"):
+                eb = eff.get("before", 0); ea = eff.get("after", 0)
+                print(f"       before: {wb} → after: {wa} ({wp:+.0f}%) · window: {eb}% → {ea}%")
+            else:
+                cb = cost.get("before", 0); ca = cost.get("after", 0); cp = cost.get("pct_change", 0)
+                print(f"       before: {wb} → after: {wa} ({wp:+.0f}%) · cost/sess: ${cb:.2f} → ${ca:.2f} ({cp:+.0f}%)")
+        elif f["status"] in ("applied", "measuring"):
+            waste_b = (baseline.get("waste_events") or {}).get("total", 0)
+            print(f"       baseline: {waste_b} waste events · run: python3 cli.py measure {f['id']}")
+        elif f["status"] == "reverted":
+            print(f"       reverted")
+        print()
+    print(f"  {'─' * 60}")
+    print()
+    conn.close() if False else None  # conn already closed above; kept for pyflake silence
+
+
+def cmd_fix_add():
+    """Interactive baseline + fix recorder."""
+    init_db()
+    conn = get_conn()
+    from fix_tracker import record_fix, WASTE_PATTERNS, FIX_TYPES, WASTE_PATTERN_LABELS
+
+    # Discover candidate projects from the live DB
+    project_rows = conn.execute(
+        "SELECT project, COUNT(*) AS n FROM sessions GROUP BY project ORDER BY n DESC"
+    ).fetchall()
+    projects = [r[0] for r in project_rows if r[0]]
+
+    print()
+    print("  Record a fix — Claudash Fix Tracker")
+    print(f"  {'─' * 50}")
+    if projects:
+        print("  Projects in the DB:")
+        for i, p in enumerate(projects, 1):
+            print(f"    {i}. {p}")
+        print()
+    project = input("  Project name: ").strip()
+    if not project:
+        print("  Cancelled.")
+        return
+
+    print()
+    print("  What waste pattern did you fix?")
+    for i, p in enumerate(WASTE_PATTERNS, 1):
+        print(f"    {i}. {p} — {WASTE_PATTERN_LABELS.get(p, '')}")
+    sel = input("  Number or name: ").strip()
+    if sel.isdigit():
+        idx = int(sel) - 1
+        pattern = WASTE_PATTERNS[idx] if 0 <= idx < len(WASTE_PATTERNS) else "custom"
+    else:
+        pattern = sel if sel in WASTE_PATTERNS else "custom"
+
+    title = input("  Fix title (one line): ").strip()
+    if not title:
+        title = f"{pattern} fix"
+
+    print()
+    print("  Fix type:")
+    for i, t in enumerate(FIX_TYPES, 1):
+        print(f"    {i}. {t}")
+    sel = input("  Number or name: ").strip()
+    if sel.isdigit():
+        idx = int(sel) - 1
+        fix_type = FIX_TYPES[idx] if 0 <= idx < len(FIX_TYPES) else "other"
+    else:
+        fix_type = sel if sel in FIX_TYPES else "other"
+
+    print()
+    print("  What exactly changed? (paste your fix, end with a blank line)")
+    lines = []
+    while True:
+        try:
+            line = input("    ")
+        except EOFError:
+            break
+        if not line and (not lines or lines[-1] == ""):
+            break
+        lines.append(line)
+    fix_detail = "\n".join(lines).strip()
+
+    print()
+    print(f"  Capturing baseline for {project}…")
+    fix_id, baseline = record_fix(conn, project, pattern, title, fix_type, fix_detail)
+    conn.close()
+
+    waste_total = (baseline.get("waste_events") or {}).get("total", 0)
+    eff = baseline.get("effective_window_pct", 0)
+    avg_cost = baseline.get("avg_cost_per_session", 0)
+    print(f"  ✓ Baseline: {waste_total} waste events, "
+          f"{eff:.0f}% window efficiency, ${avg_cost:.2f}/session API-equiv")
+    print(f"  ✓ Fix #{fix_id} recorded.")
+    print()
+    print("  Next steps:")
+    print("    1. Apply your fix to the project now.")
+    print("    2. Use Claude Code normally for 7+ days.")
+    print(f"    3. Run: python3 cli.py measure {fix_id}")
+    print()
+
+
+def cmd_measure():
+    """Capture current metrics for a fix and print a plan-aware verdict."""
+    if len(sys.argv) < 3 or not sys.argv[2].isdigit():
+        print("Usage: python3 cli.py measure <fix_id>")
+        sys.exit(1)
+    fix_id = int(sys.argv[2])
+    init_db()
+    conn = get_conn()
+    from fix_tracker import measure_fix, build_share_card
+    from db import get_fix, get_latest_fix_measurement
+    delta, verdict, metrics = measure_fix(conn, fix_id)
+    if delta is None:
+        print(f"Fix #{fix_id} not found.")
+        conn.close()
+        sys.exit(1)
+
+    fix = get_fix(conn, fix_id)
+    plan = delta.get("plan_type", "max")
+    plan_cost = delta.get("plan_cost_usd", 0)
+    project = fix["project"]
+    pattern = fix["waste_pattern"]
+    title = fix["title"]
+
+    waste = delta.get("waste_events", {})
+    flounder = delta.get("floundering", {})
+    reads = delta.get("repeated_reads", {})
+    eff = delta.get("effective_window_pct", {})
+    fpw = delta.get("files_per_window", {})
+    turns = delta.get("avg_turns_per_session", {})
+    cps = delta.get("avg_cost_per_session", {})
+    total_cost = delta.get("cost_usd", {})
+    days = delta.get("days_elapsed", 0)
+    sessions_since = delta.get("sessions_since_fix", 0)
+    api_eq = delta.get("api_equivalent_savings_monthly", 0)
+    multiplier = delta.get("improvement_multiplier", 1.0)
+
+    def row(label, before, after, change, sign="pct", ok=None):
+        change_str = f"{change:+.0f}%"
+        marker = ""
+        if ok is not None:
+            marker = "  ✓" if ok else "  ✗"
+        if sign == "money":
+            return f"  {label:<22} ${before:<10.2f} ${after:<10.2f} {change_str}{marker}"
+        if sign == "pct":
+            return f"  {label:<22} {before!s:<11} {after!s:<11} {change_str}{marker}"
+        return f"  {label:<22} {before!s:<11} {after!s:<11} {change_str}{marker}"
+
+    print()
+    print(f"  Measuring Fix #{fix_id}: {project} · {pattern} — {title}")
+    print(f"  {'─' * 60}")
+    print(f"  {'Metric':<22} {'Before':<11} {'After':<11} {'Change'}")
+    print(f"  {'─' * 60}")
+    print(row("Floundering events", flounder.get("before", 0), flounder.get("after", 0), flounder.get("pct_change", 0), ok=flounder.get("pct_change", 0) < 0))
+    print(row("Repeated reads", reads.get("before", 0), reads.get("after", 0), reads.get("pct_change", 0), ok=reads.get("pct_change", 0) < 0))
+    print(row("Waste total", waste.get("before", 0), waste.get("after", 0), waste.get("pct_change", 0), ok=waste.get("pct_change", 0) < 0))
+
+    if plan in ("max", "pro"):
+        print(row("Window efficiency", f"{eff.get('before', 0)}%", f"{eff.get('after', 0)}%",
+                  eff.get("pct_change", 0), ok=eff.get("pct_change", 0) > 0))
+        print(row("Files per window", fpw.get("before", 0), fpw.get("after", 0),
+                  fpw.get("pct_change", 0), ok=fpw.get("pct_change", 0) > 0))
+        print(row("Avg turns/session", turns.get("before", 0), turns.get("after", 0), turns.get("pct_change", 0)))
+        print(row("API-equiv cost/sess", cps.get("before", 0), cps.get("after", 0),
+                  cps.get("pct_change", 0), sign="money"))
+    else:
+        print(row("Cost per session", cps.get("before", 0), cps.get("after", 0),
+                  cps.get("pct_change", 0), sign="money", ok=cps.get("pct_change", 0) < 0))
+        print(row("Total cost (window)", total_cost.get("before", 0), total_cost.get("after", 0),
+                  total_cost.get("pct_change", 0), sign="money", ok=total_cost.get("pct_change", 0) < 0))
+
+    print(f"  {'─' * 60}")
+    verdict_upper = verdict.replace("_", " ").upper()
+    marker = "✓" if verdict == "improving" else ("✗" if verdict == "worsened" else "—")
+    print(f"  Verdict: {verdict_upper} {marker}  ({days} days, {sessions_since} sessions)")
+    print()
+    if plan in ("max", "pro"):
+        print(f"  Same ${plan_cost:.0f}/mo {plan.upper()} plan — {multiplier}x more output per window.")
+        print(f"  API-equivalent waste eliminated: ~${api_eq:.0f}/mo")
+    else:
+        print(f"  Monthly savings: ~${api_eq:.0f}/mo")
+    print()
+
+    latest = get_latest_fix_measurement(conn, fix_id)
+    card = build_share_card(fix, latest)
+    conn.close()
+    print("  Share card:")
+    print()
+    for line in card.split("\n"):
+        print("    " + line)
+    print()
+
+
+def cmd_mcp():
+    """Print MCP server settings.json snippet + run a quick smoke test."""
+    import subprocess as _sp
+    mcp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_server.py")
+    snippet = {
+        "mcpServers": {
+            "claudash": {
+                "command": "python3",
+                "args": [mcp_path],
+            }
+        }
+    }
+    print()
+    print("  Claudash MCP server")
+    print(f"  {'-' * 50}")
+    print("  Add this to ~/.claude/settings.json (merge with any existing")
+    print("  `mcpServers` block — don't overwrite the whole file):")
+    print()
+    print(json.dumps(snippet, indent=2))
+    print()
+    print("  Running smoke test…")
+    print()
+    try:
+        result = _sp.run(["python3", mcp_path, "test"], capture_output=True, text=True, timeout=15)
+        print("  " + (result.stdout.strip() or "(no output)"))
+        if result.stderr.strip():
+            print("  stderr: " + result.stderr.strip())
+        if result.returncode != 0:
+            print(f"  exit code: {result.returncode}")
+    except Exception as e:
+        print(f"  FAILED to run mcp_server.py test: {e}")
+    print()
+
+
+def _read_session_id_from_jsonl(filepath):
+    """Return the first sessionId/session_id/uuid found in a JSONL file, or
+    None. Only reads until it finds one — cheap even for huge files."""
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sid = obj.get("sessionId") or obj.get("session_id") or obj.get("uuid")
+                if sid:
+                    return sid
+    except OSError:
+        return None
+    return None
+
+
+def cmd_scan_reprocess():
+    """Re-tag every tracked session using the current PROJECT_MAP.
+
+    Steps:
+      1. Sync config.PROJECT_MAP → account_projects (so keyword edits land).
+      2. Walk scan_state.file_path (the authoritative list of scanned files).
+      3. For each file, read the first sessionId and resolve project/account
+         from the file's folder path.
+      4. UPDATE sessions SET source_path, project, account WHERE session_id.
+      5. Print a before/after distribution diff.
+    """
+    import json as _json  # local alias so we don't shadow module-level imports
+    from scanner import resolve_project, _parse_subagent_info
+    init_db()
+    conn = get_conn()
+
+    # Snapshot before
+    before = dict(conn.execute(
+        "SELECT project, COUNT(*) FROM sessions GROUP BY project"
+    ).fetchall())
+    total_before = sum(before.values())
+
+    # Step 1 — sync keyword map from config.py
+    sync_project_map_from_config(conn)
+    project_map = get_project_map_config(conn)
+
+    # Step 2 — list all tracked JSONL files
+    files = [r[0] for r in conn.execute(
+        "SELECT file_path FROM scan_state ORDER BY file_path"
+    ).fetchall()]
+
+    updated = 0
+    skipped_missing = 0
+    skipped_no_sid = 0
+    resolved_counts = {}
+
+    for filepath in files:
+        if not os.path.isfile(filepath):
+            skipped_missing += 1
+            continue
+        sid = _read_session_id_from_jsonl(filepath)
+        if not sid:
+            skipped_no_sid += 1
+            continue
+        # Subagent files inherit the parent's project tag — resolve against
+        # the parent project folder (grandparent of `subagents/`) when this
+        # is a subagent file.
+        is_subagent, parent_sid = _parse_subagent_info(filepath)
+        if is_subagent:
+            parent_project_folder = filepath.split("/subagents/")[0]
+            parent_project_folder = os.path.dirname(parent_project_folder)
+            folder = parent_project_folder or os.path.dirname(filepath)
+        else:
+            folder = os.path.dirname(filepath)
+        project, account = resolve_project(folder, project_map)
+        cur = conn.execute(
+            "UPDATE sessions SET source_path = ?, project = ?, account = ?, "
+            "                     is_subagent = ?, parent_session_id = ? "
+            "WHERE session_id = ?",
+            (filepath, project, account, is_subagent, parent_sid, sid)
+        )
+        updated += cur.rowcount
+        resolved_counts[project] = resolved_counts.get(project, 0) + 1
+
+    conn.commit()
+
+    # Snapshot after
+    after = dict(conn.execute(
+        "SELECT project, COUNT(*) FROM sessions GROUP BY project"
+    ).fetchall())
+    total_after = sum(after.values())
+
+    print()
+    print(f"  Reprocessed: {updated:,} session rows across {len(files):,} files")
+    print(f"  Files skipped (missing on disk): {skipped_missing}")
+    print(f"  Files skipped (no sessionId):    {skipped_no_sid}")
+    print()
+    print(f"  {'Project':<22} {'Before':>8} {'After':>8} {'Delta':>8}")
+    print(f"  {'-' * 50}")
+    all_projs = sorted(set(before.keys()) | set(after.keys()),
+                       key=lambda p: -(after.get(p, 0) or 0))
+    for p in all_projs:
+        b = before.get(p, 0)
+        a = after.get(p, 0)
+        d = a - b
+        delta = f"{d:+,}" if d else "—"
+        print(f"  {str(p):<22} {b:>8,} {a:>8,} {delta:>8}")
+    print(f"  {'-' * 50}")
+    print(f"  {'TOTAL':<22} {total_before:>8,} {total_after:>8,}")
+    print()
+
+    conn.close()
+
+
+def cmd_show_other():
+    """List every source path currently tagged 'Other' so the user can see
+    what keywords need adding to PROJECT_MAP."""
+    init_db()
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT source_path, COUNT(*) AS n, COUNT(DISTINCT session_id) AS sessions "
+        "FROM sessions WHERE project = 'Other' "
+        "GROUP BY source_path ORDER BY n DESC"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        print("\n  No sessions are tagged 'Other'. Every session has a project.\n")
+        return
+
+    print(f"\n  Sessions tagged 'Other' — {len(rows)} distinct source paths:")
+    print(f"  {'-' * 72}")
+    for r in rows:
+        path = r[0] or "(empty)"
+        n = r[1]
+        s = r[2]
+        # Truncate long paths for readability
+        display = path if len(path) <= 60 else "…" + path[-59:]
+        print(f"  {display:<62} {n:>5} rows / {s:>3} sessions")
+    print(f"  {'-' * 72}")
+    print("  Add folder keywords to PROJECT_MAP in config.py, then run:")
+    print("    python3 cli.py scan --reprocess")
+    print()
 
 
 def cmd_stats():
@@ -248,13 +721,26 @@ def cmd_keys():
     """Print dashboard_key and sync_token. Sensitive — do not paste into
     screenshots, chat transcripts, or shared terminals."""
     init_db()
+
+    if len(sys.argv) >= 3 and sys.argv[2] == "--rotate":
+        import secrets
+        new_key = secrets.token_hex(32)
+        conn = get_conn()
+        set_setting(conn, "dashboard_key", new_key)
+        conn.close()
+        print()
+        print(f"  New dashboard_key: {new_key}")
+        print(f"  Update this in your browser localStorage and any scripts.")
+        print()
+        return
+
     conn = get_conn()
     dk = get_setting(conn, "dashboard_key") or "(not set)"
     st = get_setting(conn, "sync_token") or "(not set)"
     conn.close()
     print()
-    print("  ⚠  These values grant full write access to your dashboard.")
-    print("     Keep them private. Do not share, screenshot, or commit them.")
+    print("  These values grant full write access to your dashboard.")
+    print("  Keep them private. Do not share, screenshot, or commit them.")
     print()
     print(f"  dashboard_key : {dk}")
     print(f"     → paste into the browser prompt when an admin button returns 401")
@@ -343,13 +829,28 @@ def main():
         sys.exit(0)
 
     cmd = sys.argv[1].lower()
+
+    # Two-word commands: `fix add`
+    if cmd == "fix":
+        sub = sys.argv[2] if len(sys.argv) >= 3 else ""
+        if sub == "add":
+            cmd_fix_add()
+            return
+        print("Usage: python3 cli.py fix add")
+        sys.exit(1)
+
     commands = {
         "dashboard": cmd_dashboard,
         "scan": cmd_scan,
+        "show-other": cmd_show_other,
         "stats": cmd_stats,
         "insights": cmd_insights,
         "window": cmd_window,
         "export": cmd_export,
+        "waste": cmd_waste,
+        "fixes": cmd_fixes,
+        "measure": cmd_measure,
+        "mcp": cmd_mcp,
         "keys": cmd_keys,
         "claude-ai": cmd_claude_ai,
     }

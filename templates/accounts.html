@@ -612,6 +612,7 @@ function authHeaders() {
         '<div class="meta-grid">' +
           '<div class="meta-cell"><div class="k">Plan cost</div><div class="v">' + fmtMoney(a.monthly_cost_usd || 0) + '/mo</div></div>' +
           '<div class="meta-cell"><div class="k">Window limit</div><div class="v">' + fmtNum(a.window_token_limit || 0) + '</div></div>' +
+          '<div class="meta-cell"><div class="k">Daily budget</div><div class="v">' + (a.daily_budget_usd > 0 ? fmtMoney(a.daily_budget_usd) : 'off') + '</div></div>' +
           '<div class="meta-cell"><div class="k">30d spend</div><div class="v">' + (a.cost_30d !== undefined ? fmtMoney(a.cost_30d) : '—') + '</div></div>' +
           '<div class="meta-cell"><div class="k">Sessions (30d)</div><div class="v">' + (a.sessions_30d !== undefined ? fmtNum(a.sessions_30d) : '—') + '</div></div>' +
         '</div>' +
@@ -799,6 +800,7 @@ function authHeaders() {
         '<div class="form-field"><label>Color</label><select id="f-color"><option value="teal">teal</option><option value="purple">purple</option><option value="blue">blue</option><option value="coral">coral</option><option value="amber">amber</option></select></div>' +
         '<div class="form-field"><label>Monthly cost (USD)</label><input id="f-cost" type="number" value="' + (a ? a.monthly_cost_usd : 100) + '"></div>' +
         '<div class="form-field"><label>Window token limit</label><input id="f-limit" type="number" value="' + (a ? a.window_token_limit : 1000000) + '"></div>' +
+        '<div class="form-field"><label>Daily budget (USD)</label><input id="f-budget" type="number" step="0.5" value="' + (a && a.daily_budget_usd ? a.daily_budget_usd : 0) + '"><div class="hint">API-equivalent. 0 disables budget alerts.</div></div>' +
         '<div class="form-field wide"><label>Data paths</label><div class="dynamic-list" id="f-paths"></div><button class="add-btn-inline" id="add-path-btn">+ Add another path</button><div id="discover-suggestions"></div></div>' +
         '<div class="form-field wide"><label>Projects (keyword → project name)</label><div class="dynamic-list" id="f-projects"></div><button class="add-btn-inline" id="add-proj-btn">+ Add another project</button></div>' +
       '</div>' +
@@ -881,6 +883,7 @@ function authHeaders() {
     const color = $('f-color').value;
     const monthly_cost_usd = parseFloat($('f-cost').value) || 0;
     const window_token_limit = parseInt($('f-limit').value) || 0;
+    const daily_budget_usd = parseFloat($('f-budget').value) || 0;
     const data_paths = Array.from($('f-paths').querySelectorAll('input')).map(i => i.value.trim()).filter(Boolean);
     const projects = Array.from($('f-projects').querySelectorAll('.dynamic-row')).map(row => {
       const inputs = row.querySelectorAll('input');
@@ -893,7 +896,7 @@ function authHeaders() {
     const isEdit = !!editingId;
     const url = isEdit ? '/api/accounts/' + editingId : '/api/accounts';
     const method = isEdit ? 'PUT' : 'POST';
-    const payload = {account_id, label, plan, color, monthly_cost_usd, window_token_limit, data_paths};
+    const payload = {account_id, label, plan, color, monthly_cost_usd, window_token_limit, daily_budget_usd, data_paths};
 
     fetch(url, {method, headers: authHeaders(), body: JSON.stringify(payload)})
       .then(r => r.json())

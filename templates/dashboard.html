@@ -137,7 +137,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 /* ── Hero stat strip ────────────────────────────────────────────── */
 .hero {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -155,6 +155,23 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .hero-cell:nth-child(3) { animation-delay: 100ms; }
 .hero-cell:nth-child(4) { animation-delay: 150ms; }
 .hero-cell:nth-child(5) { animation-delay: 200ms; }
+.hero-cell:nth-child(6) { animation-delay: 250ms; }
+.hero-cell .mini-bar {
+  margin-top: 10px;
+  width: 100%;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.hero-cell .mini-bar .fill {
+  height: 100%;
+  background: var(--accent-green);
+  border-radius: 2px;
+  transition: width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.hero-cell .mini-bar .fill.amber { background: var(--accent-amber); }
+.hero-cell .mini-bar .fill.red { background: var(--accent-red); }
 
 .hero-cell .label {
   font-family: var(--sans);
@@ -386,6 +403,55 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   font-style: italic;
 }
 
+/* ── Story cards ────────────────────────────────────────────────── */
+.story-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  animation: fadeUp 0.3s ease both;
+}
+.story-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-amber);
+  background: #FEF3C7;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.story-card .story-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.story-card .story-finding {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.story-card .story-action {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent-green);
+  margin-bottom: 10px;
+}
+.story-card .story-footer {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+@media (max-width: 960px) {
+  #story-grid { grid-template-columns: 1fr !important; }
+}
+
 /* ── Trends (bar chart) ─────────────────────────────────────────── */
 .trends-wrap {
   background: var(--surface);
@@ -481,6 +547,192 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 .eff-table td:last-child { color: var(--accent-amber); text-align: right; }
 
+/* ── Fix tracker ────────────────────────────────────────────────── */
+.form-card {
+  display: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px;
+  margin-bottom: 18px;
+}
+.form-card.open { display: block; animation: fadeUp 0.25s ease; }
+.form-card h3 { font-family: var(--serif); font-size: 18px; margin-bottom: 16px; }
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 18px;
+  margin-bottom: 16px;
+}
+.form-field.wide { grid-column: 1 / -1; }
+.form-field label {
+  display: block;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.form-field input, .form-field select, .form-field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+.form-field textarea { min-height: 80px; }
+.form-field input:focus, .form-field select:focus, .form-field textarea:focus {
+  outline: none; border-color: var(--text-primary);
+}
+.form-actions { display: flex; gap: 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.btn-primary {
+  background: var(--text-primary);
+  color: var(--bg);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+}
+.btn-primary:hover { opacity: 0.85; }
+.btn-ghost {
+  padding: 8px 14px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 13px;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+.btn-ghost:hover { background: var(--surface-warm); color: var(--text-primary); }
+
+.fix-card {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1.3fr;
+  gap: 24px;
+  padding: 20px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  animation: fadeUp 0.3s ease both;
+}
+.fix-card .col-left { display: flex; flex-direction: column; gap: 8px; }
+.fix-card .col-title { display: flex; align-items: center; gap: 10px; }
+.fix-card .status-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-tertiary);
+}
+.fix-card .status-dot.amber { background: var(--accent-amber); }
+.fix-card .status-dot.green { background: var(--accent-green); }
+.fix-card .status-dot.gray { background: var(--text-tertiary); }
+.fix-card .fix-project {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.fix-card .pattern-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--tag-bg);
+  color: var(--text-secondary);
+  text-transform: lowercase;
+}
+.fix-card .pattern-pill.red { background: #FCE8E6; color: var(--accent-red); }
+.fix-card .pattern-pill.amber { background: #FEF3E6; color: var(--accent-amber); }
+.fix-card .fix-title {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.fix-card .fix-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.fix-card .col-middle {
+  display: flex; flex-direction: column; gap: 8px;
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+}
+.fix-card .col-middle .k {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+.fix-card .col-middle .v {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.fix-card .col-right {
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+}
+.fix-card .delta-line {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.fix-card .delta-line .up { color: var(--accent-green); }
+.fix-card .delta-line .down { color: var(--accent-red); }
+.fix-card .delta-line .k {
+  color: var(--text-tertiary);
+  margin-right: 6px;
+}
+.fix-card .card-actions { display: flex; gap: 8px; margin-top: 8px; }
+.fix-card .btn-action {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--bg);
+  border: none;
+  cursor: pointer;
+}
+.fix-card .btn-action.ghost {
+  background: none;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.fix-card .btn-action:hover { opacity: 0.85; }
+.fix-empty {
+  text-align: center;
+  padding: 30px 20px;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.fix-toast {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-green);
+  margin-left: 10px;
+}
+
 /* ── Footer ─────────────────────────────────────────────────────── */
 .footer {
   margin-top: 60px;
@@ -523,6 +775,12 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 </header>
 
 <main class="content">
+  <!-- First-run banner -->
+  <div id="first-run-banner" style="display:none; background:#FEF3C7; border:1px solid #F59E0B; border-radius:10px; padding:18px 24px; margin-bottom:24px; font-family:var(--mono); font-size:13px; color:#92400E; position:relative;">
+    <strong>No data yet</strong> — run <code style="background:#FDE68A; padding:2px 6px; border-radius:3px;">python3 cli.py scan</code> in your terminal, then refresh this page.
+    <button onclick="this.parentElement.style.display='none'" style="position:absolute; top:12px; right:16px; font-size:16px; color:#92400E; cursor:pointer; background:none; border:none;">×</button>
+  </div>
+
   <!-- Hero stats -->
   <section class="hero" id="hero"></section>
 
@@ -555,6 +813,12 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
     <div class="insights-list" id="ins-list"></div>
   </section>
 
+  <!-- What Claudash Found -->
+  <section class="section" id="stories-section" style="display:none;">
+    <h2 class="section-title">What Claudash Found <span class="count" id="story-count">0</span></h2>
+    <div id="story-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:16px;"></div>
+  </section>
+
   <!-- Trends -->
   <section class="section">
     <h2 class="section-title">7-day spend</h2>
@@ -576,6 +840,17 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
         <div id="rightsizing"></div>
       </div>
     </div>
+  </section>
+
+  <!-- Fix tracker -->
+  <section class="section">
+    <h2 class="section-title">Fix tracker
+      <span class="count" id="fix-count">0</span>
+      <button class="link-btn" id="add-fix-btn" style="margin-left:auto;font-family:var(--sans);font-size:12px;color:var(--text-secondary);padding:4px 10px;border:1px solid var(--border);border-radius:6px">+ Record a fix</button>
+    </h2>
+    <div style="font-family:var(--sans);font-size:12px;color:var(--text-tertiary);margin-top:-14px;margin-bottom:16px">Record a fix → measure the result. Plan-aware: max/pro report window efficiency, api reports dollars.</div>
+    <div class="form-card" id="fix-form"></div>
+    <div id="fix-list"></div>
   </section>
 
   <div class="footer" id="footer">Loading…</div>
@@ -678,20 +953,60 @@ function authHeaders() {
     const cacheHit = m.cache_hit_rate || 0;
     const sessionsToday = m.sessions_today || 0;
 
+    // Daily budget — pick the active account, or aggregate when "all"
+    const dbm = data.daily_budget || {};
+    let todayCost = 0, budget = 0, hasBudget = false, budgetPct = 0;
+    if (currentAccount === 'all') {
+      for (const k of Object.keys(dbm)) {
+        todayCost += dbm[k].today_cost || 0;
+        budget += dbm[k].budget_usd || 0;
+        if (dbm[k].has_budget) hasBudget = true;
+      }
+      budgetPct = budget > 0 ? (todayCost / budget * 100) : 0;
+    } else {
+      const b = dbm[currentAccount] || {};
+      todayCost = b.today_cost || 0;
+      budget = b.budget_usd || 0;
+      hasBudget = !!b.has_budget;
+      budgetPct = b.budget_pct || 0;
+    }
+
+    let todayCell;
+    if (hasBudget) {
+      const cls = budgetPct >= 100 ? 'red' : (budgetPct >= 80 ? 'amber' : 'green');
+      todayCell = {
+        label: 'Today',
+        value: fmtMoney(todayCost),
+        sub: '/ ' + fmtMoney(budget) + ' (' + budgetPct.toFixed(0) + '%)',
+        cls: cls,
+        bar: Math.min(budgetPct, 100),
+        barCls: cls,
+      };
+    } else {
+      todayCell = {label: 'Today', value: fmtMoney(todayCost), sub: 'no budget set', cls: '', bar: null};
+    }
+
     const cells = [
       {label: 'Window', value: fmtPct(winPct), sub: (win.minutes_to_limit ? '~' + win.minutes_to_limit + ' min to cap' : 'safe'), cls: windowClass(winPct)},
       {label: 'API equiv 30d', value: fmtMoney(apiEquiv), sub: 'vs pay-per-token', cls: ''},
       {label: 'ROI', value: roi.toFixed(1) + 'x', sub: 'subscription multiple', cls: roi >= 5 ? 'green' : ''},
       {label: 'Cache hit', value: fmtPct(cacheHit), sub: 'reads / (reads+writes)', cls: ''},
       {label: 'Sessions today', value: fmtNum(sessionsToday), sub: 'distinct conversations', cls: ''},
+      todayCell,
     ];
-    $('hero').innerHTML = cells.map(c => (
-      '<div class="hero-cell">' +
-        '<div class="label">' + esc(c.label) + '</div>' +
-        '<div class="value ' + c.cls + '">' + esc(c.value) + '</div>' +
-        '<div class="sub">' + esc(c.sub) + '</div>' +
-      '</div>'
-    )).join('');
+    $('hero').innerHTML = cells.map(c => {
+      const bar = (c.bar !== null && c.bar !== undefined)
+        ? '<div class="mini-bar"><div class="fill ' + (c.barCls || '') + '" style="width:' + c.bar + '%"></div></div>'
+        : '';
+      return (
+        '<div class="hero-cell">' +
+          '<div class="label">' + esc(c.label) + '</div>' +
+          '<div class="value ' + c.cls + '">' + esc(c.value) + '</div>' +
+          '<div class="sub">' + esc(c.sub) + '</div>' +
+          bar +
+        '</div>'
+      );
+    }).join('');
   }
 
   function renderWindows(data) {
@@ -743,6 +1058,8 @@ function authHeaders() {
 
   function renderProjects(data) {
     const projs = data.projects || [];
+    const subagents = data.subagent_metrics || {};
+    const waste = data.waste_summary || {};
     $('proj-count').textContent = projs.length;
     if (!projs.length) {
       $('proj-body').innerHTML = '<tr><td colspan="8" class="empty">No projects yet. Run a scan or check your data_paths in /accounts.</td></tr>';
@@ -782,6 +1099,8 @@ function authHeaders() {
               '<div class="kv"><span class="k">cache ROI</span><span class="v">' + fmtMoney(p.cache_roi_usd || 0) + '</span></div>' +
               (rs > 0 ? '<div class="kv"><span class="k">rightsizing saves</span><span class="v">' + fmtMoney(rs) + '/mo</span></div>' : '') +
             '</div>' +
+            renderSubagentBlock(p.name, subagents[p.name] || {}) +
+            renderWasteBlock(p.name, waste[p.name] || {}) +
           '</td>' +
         '</tr>'
       );
@@ -793,6 +1112,47 @@ function authHeaders() {
         if (exp) exp.style.display = exp.style.display === 'none' ? 'table-row' : 'none';
       });
     });
+  }
+
+  function renderSubagentBlock(projName, sm) {
+    if (!sm || !sm.subagent_session_count) return '';
+    const top = sm.top_spawning_sessions || [];
+    let html = '<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">';
+    html += '<div class="k" style="font-family:var(--sans);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-tertiary);margin-bottom:8px">Sub-agents</div>';
+    html += '<div class="kvs">';
+    html += '<div class="kv"><span class="k">spawned</span><span class="v">' + fmtNum(sm.subagent_session_count) + '</span></div>';
+    html += '<div class="kv"><span class="k">cost</span><span class="v">' + fmtMoney(sm.subagent_cost_usd) + '</span></div>';
+    html += '<div class="kv"><span class="k">% of project</span><span class="v">' + fmtPct(sm.subagent_pct_of_total, 1) + '</span></div>';
+    html += '</div>';
+    if (top.length) {
+      html += '<div style="margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--text-secondary)">Top spawning parents:</div>';
+      html += '<div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);margin-top:4px">';
+      for (const t of top) {
+        const pid = (t.parent_session_id || '').slice(0, 8);
+        html += '<div>· ' + esc(pid) + '…  ' + fmtNum(t.subagents_spawned) + ' spawned  ' + fmtMoney(t.cost_usd) + '</div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderWasteBlock(projName, w) {
+    if (!w) return '';
+    const total = (w.floundering_sessions || 0) + (w.repeated_read_sessions || 0)
+                  + (w.cost_outliers || 0) + (w.deep_no_compact || 0);
+    if (!total) return '';
+    let html = '<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">';
+    html += '<div class="k" style="font-family:var(--sans);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:var(--accent-red);margin-bottom:8px">Waste detected</div>';
+    html += '<div class="kvs">';
+    if (w.floundering_sessions) html += '<div class="kv"><span class="k">floundering</span><span class="v">' + fmtNum(w.floundering_sessions) + '</span></div>';
+    if (w.repeated_read_sessions) html += '<div class="kv"><span class="k">repeated reads</span><span class="v">' + fmtNum(w.repeated_read_sessions) + '</span></div>';
+    if (w.cost_outliers) html += '<div class="kv"><span class="k">cost outliers</span><span class="v">' + fmtNum(w.cost_outliers) + '</span></div>';
+    if (w.deep_no_compact) html += '<div class="kv"><span class="k">deep, no compact</span><span class="v">' + fmtNum(w.deep_no_compact) + '</span></div>';
+    if (w.total_waste_cost_est > 0) html += '<div class="kv"><span class="k">est. at risk</span><span class="v">' + fmtMoney(w.total_waste_cost_est) + '</span></div>';
+    html += '</div>';
+    html += '</div>';
+    return html;
   }
 
   function renderInsights(data) {
@@ -831,6 +1191,43 @@ function authHeaders() {
           .then(() => setTimeout(() => { if (row) row.remove(); refresh(); }, 250))
           .catch(() => { if (row) row.classList.remove('dismissing'); });
       });
+    });
+  }
+
+  function renderStories() {
+    fetch('/api/real-story').then(function(r) { return r.json(); }).then(function(resp) {
+      var stories = resp.stories || [];
+      var section = $('stories-section');
+      var grid = $('story-grid');
+      $('story-count').textContent = stories.length;
+      if (!stories.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+      var badgeLabels = {
+        model_mismatch: 'Model Mismatch',
+        floundering_detected: 'Got Stuck',
+        repeated_reads: 'Repeated Reads',
+        subagent_spike: 'Sub-agent Spike',
+        cost_spike_day: 'Cost Spike'
+      };
+      grid.innerHTML = stories.map(function(s) {
+        var badge = badgeLabels[s.type] || s.type;
+        var footer = 'Verified';
+        if (s.sessions_analyzed) footer += ' · ' + s.sessions_analyzed + ' sessions analyzed';
+        return (
+          '<div class="story-card">' +
+            '<div class="story-badge">' + esc(badge) + '</div>' +
+            '<div class="story-title">' + esc(s.title) + '</div>' +
+            '<div class="story-finding">' + esc(s.finding) + '</div>' +
+            '<div class="story-action">' + esc(s.what_to_do) + '</div>' +
+            '<div class="story-footer">' + esc(footer) + '</div>' +
+          '</div>'
+        );
+      }).join('');
+    }).catch(function() {
+      $('stories-section').style.display = 'none';
     });
   }
 
@@ -900,11 +1297,14 @@ function authHeaders() {
   let lastData = null;
   function render() { if (lastData) { paint(lastData); } else { refresh(); } }
   function paint(data) {
+    var banner = $('first-run-banner');
+    if (data.first_run) { banner.style.display = 'block'; } else { banner.style.display = 'none'; }
     buildTabs(data.accounts_list || []);
     renderHero(data);
     renderWindows(data);
     renderProjects(data);
     renderInsights(data);
+    renderStories(data);
     renderTrends(data);
     renderCompaction(data);
     renderRightsizing(data);
@@ -935,6 +1335,212 @@ function authHeaders() {
       .then(() => { this.textContent = prev; this.disabled = false; refresh(); })
       .catch(() => { this.textContent = prev; this.disabled = false; });
   });
+
+  // ── Fix tracker ─────────────────────────────────────────────
+  let fixProjects = [];
+
+  function fetchFixes() {
+    fetch('/api/fixes').then(r => r.json()).then(rows => {
+      renderFixList(rows || []);
+    }).catch(() => { renderFixList([]); });
+  }
+
+  function renderFixList(rows) {
+    const el = $('fix-list');
+    $('fix-count').textContent = rows.length;
+    if (!rows.length) {
+      el.innerHTML = '<div class="fix-empty">No fixes recorded yet — click <b>+ Record a fix</b> to snapshot a baseline and start measuring.</div>';
+      return;
+    }
+    el.innerHTML = rows.map(f => renderFixCard(f)).join('');
+    wireFixCardEvents();
+  }
+
+  function renderFixCard(f) {
+    const baseline = f.baseline || {};
+    const plan = baseline.plan_type || 'max';
+    const planCost = baseline.plan_cost_usd || 0;
+    const waste = baseline.waste_events || {};
+    const days = Math.max(Math.floor((Date.now()/1000 - (f.created_at || 0)) / 86400), 0);
+    const status = f.status || 'applied';
+    const dotCls = status === 'confirmed' ? 'green'
+                 : status === 'reverted' ? 'gray' : 'amber';
+    const patternClass = ['floundering','cost_outlier','cache_spike'].includes(f.waste_pattern) ? 'red'
+                       : 'amber';
+
+    // Left col
+    const left =
+      '<div class="col-left">' +
+        '<div class="col-title">' +
+          '<div class="status-dot ' + dotCls + '"></div>' +
+          '<div class="fix-project">' + esc(f.project) + '</div>' +
+          '<div class="pattern-pill ' + patternClass + '">' + esc((f.waste_pattern || '').replace(/_/g,' ')) + '</div>' +
+        '</div>' +
+        '<div class="fix-title">' + esc(f.title || '(no title)') + '</div>' +
+        '<div class="fix-meta">applied ' + days + 'd ago · ' + esc(f.fix_type || 'other') + '</div>' +
+      '</div>';
+
+    // Middle col (baseline)
+    let middle = '<div class="col-middle">';
+    if (plan === 'max' || plan === 'pro') {
+      middle += '<div><span class="k">window eff.</span> <span class="v">' + fmtPct(baseline.effective_window_pct || 0, 1) + '</span></div>';
+      middle += '<div><span class="k">waste events</span> <span class="v">' + fmtNum(waste.total || 0) + '</span></div>';
+      middle += '<div><span class="k">files/window</span> <span class="v">' + fmtNum(baseline.files_per_window || 0) + '</span></div>';
+    } else {
+      middle += '<div><span class="k">cost/session</span> <span class="v">' + fmtMoney(baseline.avg_cost_per_session || 0) + '</span></div>';
+      middle += '<div><span class="k">waste events</span> <span class="v">' + fmtNum(waste.total || 0) + '</span></div>';
+      middle += '<div><span class="k">window cost</span> <span class="v">' + fmtMoney(baseline.cost_usd || 0) + '</span></div>';
+    }
+    middle += '</div>';
+
+    // Right col — status-dependent
+    let right = '<div class="col-right">';
+    if (status === 'confirmed' && f.latest) {
+      const delta = f.latest.delta || {};
+      const eff = delta.effective_window_pct || {};
+      const fpw = delta.files_per_window || {};
+      const waste2 = delta.waste_events || {};
+      const cps = delta.avg_cost_per_session || {};
+      const mult = delta.improvement_multiplier || 1;
+      const apiEq = delta.api_equivalent_savings_monthly || 0;
+      if (plan === 'max' || plan === 'pro') {
+        right += '<div class="delta-line"><span class="k">waste</span> ' + waste2.before + ' → <span class="up">' + waste2.after + '</span> (' + waste2.pct_change + '%)</div>';
+        right += '<div class="delta-line"><span class="k">window</span> ' + (eff.before || 0) + '% → <span class="up">' + (eff.after || 0) + '%</span></div>';
+        right += '<div class="delta-line"><span class="k">output</span> ' + (fpw.before || 0) + ' → <span class="up">' + (fpw.after || 0) + '</span> files/window</div>';
+        right += '<div class="fix-meta">Same $' + planCost.toFixed(0) + '/mo · <b>' + mult + '×</b> more output · API-equiv ~$' + apiEq.toFixed(0) + '/mo</div>';
+      } else {
+        right += '<div class="delta-line"><span class="k">cost/sess</span> ' + fmtMoney(cps.before || 0) + ' → <span class="up">' + fmtMoney(cps.after || 0) + '</span></div>';
+        right += '<div class="delta-line"><span class="k">waste</span> ' + waste2.before + ' → <span class="up">' + waste2.after + '</span></div>';
+        right += '<div class="fix-meta">Saved <b>~$' + apiEq.toFixed(0) + '/mo</b></div>';
+      }
+      right += '<div class="card-actions">' +
+               '<button class="btn-action" data-share="' + f.id + '">Copy share card</button>' +
+               '<button class="btn-action ghost" data-measure="' + f.id + '">Re-measure</button>' +
+               '<span class="fix-toast" id="fix-toast-' + f.id + '"></span>' +
+               '</div>';
+    } else if (status === 'reverted') {
+      right += '<div class="fix-meta">Reverted</div>';
+      right += '<div class="card-actions"><button class="btn-action ghost" data-delete="' + f.id + '">Remove</button></div>';
+    } else {
+      right += '<div class="delta-line"><span class="k">' + days + ' days elapsed</span></div>';
+      if (f.latest) {
+        const d = f.latest.delta || {};
+        const w = d.waste_events || {};
+        right += '<div class="delta-line"><span class="k">latest</span> ' + (w.before || 0) + ' → ' + (w.after || 0) + ' (' + (w.pct_change || 0) + '%) · verdict: <b>' + esc(f.latest.verdict || '') + '</b></div>';
+      }
+      right += '<div class="card-actions">' +
+               '<button class="btn-action" data-measure="' + f.id + '">Measure now</button>' +
+               '<button class="btn-action ghost" data-delete="' + f.id + '">Revert</button>' +
+               '<span class="fix-toast" id="fix-toast-' + f.id + '"></span>' +
+               '</div>';
+    }
+    right += '</div>';
+
+    return '<div class="fix-card" data-fix="' + f.id + '">' + left + middle + right + '</div>';
+  }
+
+  function wireFixCardEvents() {
+    document.querySelectorAll('[data-measure]').forEach(b => {
+      b.addEventListener('click', () => {
+        const id = b.dataset.measure;
+        b.disabled = true;
+        b.textContent = 'Measuring…';
+        fetch('/api/fixes/' + id + '/measure', {method: 'POST', headers: authHeaders()})
+          .then(r => r.json())
+          .then(() => fetchFixes())
+          .catch(() => { b.disabled = false; b.textContent = 'Measure now'; });
+      });
+    });
+    document.querySelectorAll('[data-share]').forEach(b => {
+      b.addEventListener('click', () => {
+        const id = b.dataset.share;
+        fetch('/api/fixes/' + id + '/share-card').then(r => r.text()).then(text => {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text);
+          } else {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch (e) {}
+            document.body.removeChild(ta);
+          }
+          const toast = $('fix-toast-' + id);
+          if (toast) { toast.textContent = 'Copied!'; setTimeout(() => { toast.textContent = ''; }, 2000); }
+        });
+      });
+    });
+    document.querySelectorAll('[data-delete]').forEach(b => {
+      b.addEventListener('click', () => {
+        const id = b.dataset.delete;
+        if (!confirm('Revert this fix? The baseline and measurements are kept.')) return;
+        fetch('/api/fixes/' + id, {method: 'DELETE', headers: authHeaders()})
+          .then(() => fetchFixes());
+      });
+    });
+  }
+
+  function showFixForm() {
+    const f = $('fix-form');
+    f.classList.add('open');
+    const accts = (lastData && lastData.accounts_list) || [];
+    const projectRows = (lastData && lastData.projects) || [];
+    const projectNames = Array.from(new Set(projectRows.map(p => p.name))).sort();
+    const projectOpts = projectNames.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+    f.innerHTML =
+      '<h3>Record a fix</h3>' +
+      '<div class="form-grid">' +
+        '<div class="form-field"><label>Project</label><select id="ff-project">' + projectOpts + '</select></div>' +
+        '<div class="form-field"><label>What was detected</label>' +
+          '<select id="ff-pattern">' +
+            '<option value="floundering">Floundering (tool retry loops)</option>' +
+            '<option value="repeated_reads">Repeated reads (same file 3+ times)</option>' +
+            '<option value="deep_no_compact">Deep session no compaction</option>' +
+            '<option value="cost_outlier">Cost outlier (session 3x average)</option>' +
+            '<option value="cache_spike">Cache spike</option>' +
+            '<option value="model_waste">Model waste (Opus short outputs)</option>' +
+            '<option value="custom">Custom</option>' +
+          '</select></div>' +
+        '<div class="form-field wide"><label>Fix title</label><input id="ff-title" type="text" placeholder="e.g. Add max-retry rule to CLAUDE.md"></div>' +
+        '<div class="form-field"><label>Fix type</label>' +
+          '<select id="ff-type">' +
+            '<option value="claude_md">CLAUDE.md rule</option>' +
+            '<option value="settings_json">settings.json change</option>' +
+            '<option value="prompt">Prompt change</option>' +
+            '<option value="architecture">Architecture change</option>' +
+            '<option value="other">Other</option>' +
+          '</select></div>' +
+        '<div class="form-field wide"><label>What exactly changed</label><textarea id="ff-detail" placeholder="Paste your fix here — CLAUDE.md snippet, settings diff, new prompt…"></textarea></div>' +
+      '</div>' +
+      '<div class="form-actions">' +
+        '<button class="btn-primary" id="ff-save">Capture baseline & save</button>' +
+        '<button class="btn-ghost" id="ff-cancel">Cancel</button>' +
+      '</div>';
+
+    $('ff-cancel').addEventListener('click', () => { f.classList.remove('open'); });
+    $('ff-save').addEventListener('click', () => {
+      const payload = {
+        project: $('ff-project').value,
+        waste_pattern: $('ff-pattern').value,
+        title: $('ff-title').value.trim(),
+        fix_type: $('ff-type').value,
+        fix_detail: $('ff-detail').value,
+      };
+      if (!payload.project || !payload.title) return;
+      $('ff-save').disabled = true;
+      $('ff-save').textContent = 'Saving…';
+      fetch('/api/fixes', {method: 'POST', headers: authHeaders(), body: JSON.stringify(payload)})
+        .then(r => r.json())
+        .then(resp => {
+          if (resp.success) { f.classList.remove('open'); fetchFixes(); }
+          else { $('ff-save').disabled = false; $('ff-save').textContent = 'Capture baseline & save'; alert(resp.error || 'Save failed'); }
+        })
+        .catch(() => { $('ff-save').disabled = false; $('ff-save').textContent = 'Capture baseline & save'; });
+    });
+  }
+
+  $('add-fix-btn').addEventListener('click', showFixForm);
+  fetchFixes();
 
   // Auto-refresh
   refresh();

@@ -86,7 +86,7 @@
 - **Label drift** (`config.py` vs DB vs README all disagreed) → unified; live DB `UPDATE` reconciled both `accounts.label` and `claude_ai_accounts.label`.
   Files: config.py, README.md, data/usage.db (one-shot SQL)
 
-- **Hardcoded VPS IP `174.138.183.88`** → removed from all code files and docs. `config.py` now reads `VPS_IP = os.environ.get('CLAUDASH_VPS_IP', 'localhost')`. Markdown docs show `YOUR_VPS_IP`. CLI banner reads from env.
+- **Hardcoded VPS IP `YOUR_VPS_IP`** → removed from all code files and docs. `config.py` now reads `VPS_IP = os.environ.get('CLAUDASH_VPS_IP', 'localhost')`. Markdown docs show `YOUR_VPS_IP`. CLI banner reads from env.
   Files: config.py, cli.py, tools/mac-sync.py, README.md, REPORT.md, END_USER_REVIEW.md, SECURITY_TRUTH_MAP.md
 
 - **Compaction detector dead code (0 events across 20K rows)** → two underlying bugs:
@@ -146,7 +146,7 @@
 - **JK branding** from every code file and markdown doc:
   - `"JK Usage Dashboard"` → `"Claudash"` (replace_all across README, REPORT, FOUNDING_DOC, END_USER_REVIEW, CHANGELOG, SECURITY_TRUTH_MAP, cli.py docstring, HTML titles)
   - Version string `v2.0`/`v2.1` → `v1.0` (fresh brand, fresh start)
-  - Hardcoded IP `174.138.183.88` → `YOUR_VPS_IP` in markdown docs; env var lookup in code
+  - Hardcoded IP `YOUR_VPS_IP` → `YOUR_VPS_IP` in markdown docs; env var lookup in code
   Why: the project is becoming a generic tool for any Claude user, not the author's personal VPS.
   Files: README.md, REPORT.md, FOUNDING_DOC.md, END_USER_REVIEW.md, CHANGELOG.md (header), SECURITY_TRUTH_MAP.md, cli.py, config.py, tools/mac-sync.py, templates/dashboard.html, templates/accounts.html
 
@@ -194,8 +194,7 @@
 - **Stale `test_acct` row** in `accounts` table (active=0) from earlier debugging. Filtered out by UI/API. DB clutter only.
   Why deferred: harmless, not in scope.
 
-- **Dashboard key exposed in SECURITY_TRUTH_MAP.md and previous reports** (`bee3793944f034635c699fa31c889cc6`). These documents live in the repo and the value will travel with any clone.
-  Why deferred: awaiting user decision on whether to rotate. Rotation: `sqlite3 data/usage.db "DELETE FROM settings WHERE key='dashboard_key'"` then any `init_db()` call.
+- **Dashboard key was exposed in SECURITY_TRUTH_MAP.md** — file deleted in Session 5. Key rotation available via `python3 cli.py keys --rotate`.
 
 - **Historical CHANGELOG entries** (Session 1 + Session 2) retain original "JK Usage Dashboard" prose in the body. Only the top-of-file title was updated via replace_all.
   Why deferred: rewriting history dishonestly.
@@ -211,3 +210,107 @@
 
 - **Dashboard tabs hidden on <960px viewports.** Mobile-friendly account switcher would be a small follow-up.
   Why deferred: out of scope for this rebrand; single-account users don't need tabs anyway.
+
+## [2026-04-12] Session 4 — Five major features, fork-ready cleanup, Fix Tracker
+
+### Fixed
+- **source_path stored data_path root, not actual JSONL file** → `scanner.py` now stores the full JSONL filepath in `sessions.source_path`, enabling per-row project re-resolution.
+  Files: scanner.py:174-184
+
+- **session_id used per-MESSAGE `uuid` instead of per-conversation `sessionId`** → scanner prefers `sessionId`, compaction/session metrics now group correctly. Required full rescan (wipe sessions + scan_state → 17K rows / 56 real sessions).
+  Files: scanner.py:86-88
+
+- **Compaction detector formula overcounted tokens** → per-turn scaling for both floundering (1 turn/event) and repeated_reads (2 extra reads/event) instead of per-session scaling that collapsed `effective_window_pct` to 0%.
+  Files: fix_tracker.py:capture_baseline
+
+- **Cache hit rate formula conceptually wrong** → denominator changed from `reads + input` to `reads + cache_creation` in all 3 callsites. Live: 99.96% → 96.7%.
+  Files: analyzer.py:58-65, ~207-240, ~395-410
+
+- **DB file 0644 (world-readable plaintext session keys)** → `_lock_db_file()` chmods to 0600 on every `get_conn()` + end of `init_db()`.
+  Files: db.py:1-36
+
+- **`cli.py stats` printed dashboard_key to stdout** → replaced with hint; actual key only via `cli.py keys`.
+  Files: cli.py:129-131
+
+- **Frontend templates did not send X-Dashboard-Key on writes** → global `window.fetch` wrapper auto-injects key on POST/PUT/DELETE + handles 401 with prompt-and-reload; every explicit write fetch also carries `headers: authHeaders()`.
+  Files: templates/dashboard.html, templates/accounts.html
+
+- **All "Other" sessions (2,337) re-tagged** → `cli.py scan --reprocess` + updated PROJECT_MAP with folder-name keywords → Other dropped to 0.
+  Files: cli.py:cmd_scan_reprocess, config.py (PROJECT_MAP), db.py:sync_project_map_from_config
+
+### Added
+- **Feature 1 — OAuth sync** (`tools/oauth_sync.py`, 230 lines) — pure stdlib collector that reads Claude Code's OAuth token from `~/.claude/.credentials.json` (+ macOS Keychain fallback), calls `claude.ai/api/account` and `/api/organizations/{id}/usage` via Bearer auth, POSTs to `/api/claude-ai/sync`. Supports multi-account setups. Replaces cookie extraction for Claude Code users.
+  Also: `tools/get-derived-keys.py` (70 lines) — helper that extracts pre-derived Chromium AES keys for cron-friendly mac-sync.py runs.
+  Files: tools/oauth_sync.py, tools/get-derived-keys.py
+
+- **Feature 2 — Sub-agent cost tracking** — `sessions.is_subagent` + `sessions.parent_session_id` columns; `_parse_subagent_info()` in scanner detects `/subagents/` in path; `subagent_metrics()` in analyzer computes per-project rollup (`subagent_session_count`, `subagent_cost_usd`, `subagent_pct_of_total`, `top_spawning_sessions`); `scan --reprocess` backfills both columns. Live: 12,207 subagent rows / 29 sessions, Tidify 75% subagent cost.
+  Insight rule: `SUBAGENT_COST_SPIKE` fires at >30% subagent share (3 fired on live data).
+  Files: scanner.py, db.py (ALTER TABLE), analyzer.py:subagent_metrics, insights.py, cli.py:cmd_scan_reprocess
+
+- **Feature 3 — MCP server** (`mcp_server.py`, 300 lines) — JSON-RPC 2.0 over stdio with 5 tools: `claudash_summary`, `claudash_project(project_name)`, `claudash_window`, `claudash_insights`, `claudash_action_center`. Reads SQLite directly (no HTTP needed). `cli.py mcp` prints settings.json snippet + smoke-tests.
+  Files: mcp_server.py, cli.py:cmd_mcp
+
+- **Feature 4 — Waste pattern detection** (`waste_patterns.py`, 280 lines) — 4 detectors (FLOUNDERING: ≥4 consecutive same tool; REPEATED_READS: same file ≥3x; COST_OUTLIER: session >3x project avg; DEEP_CONTEXT_NO_COMPACT: >100 turns, 0 compactions). New `waste_events` table; runs after every scan. Live: 110 events across 6 projects (53 floundering, 47 repeated_reads, 2 cost_outliers, 8 deep_no_compact).
+  Insight rule: `FLOUNDERING_DETECTED` (6 fired live). `cli.py waste` prints summary.
+  Dashboard: waste_summary per project in `/api/data`; inline waste block in project-row expansion.
+  Files: waste_patterns.py, db.py (waste_events table), insights.py, analyzer.py:full_analysis, cli.py:cmd_waste, templates/dashboard.html
+
+- **Feature 5 — Daily budget alerts** — `accounts.daily_budget_usd` column; `daily_budget_metrics()` in analyzer computes today_cost/budget_pct/projected_daily/on_track per account; new insight rules `BUDGET_EXCEEDED` (red) and `BUDGET_WARNING` (amber >80%). Dashboard: 6th hero card "Today" with inline budget progress bar (green/amber/red). Accounts form: daily budget USD input field.
+  Files: db.py, config.py:DAILY_BUDGET_USD, analyzer.py:daily_budget_metrics, insights.py, templates/dashboard.html, templates/accounts.html
+
+- **Feature 6 — Fork-ready cleanup** — `.gitignore` (DB/CSV/pycache/env/OS junk), `data/.gitkeep`, `LICENSE` (MIT 2026), `config.py` cleaned (generic single-account example, empty PROJECT_MAP with docs, empty DAILY_BUDGET_USD with docs), `README.md` rewritten (feature list, two-sync-methods, competitive comparison table vs ccusage/claude-usage/claude-monitor, 14 insight rules, full API table, tech stack).
+  Files: .gitignore, data/.gitkeep, LICENSE, config.py, README.md
+
+- **Fix Tracker feature** (`fix_tracker.py`, 380 lines) — record a fix → snapshot baseline → measure after N days → plan-aware verdict → shareable receipt.
+  - DB: `fixes` table (project, waste_pattern, title, fix_type, fix_detail, baseline_json, status) + `fix_measurements` table (fix_id, metrics_json, delta_json, verdict)
+  - `capture_baseline()`: aggregates sessions, cache, compactions, waste, subagent cost, window burn → full baseline_json
+  - `compute_delta()`: diffs baseline vs current, builds delta_json with plan_type, primary_metric, per-pattern before/after/pct_change, tokens_saved, improvement_multiplier, api_equivalent_savings_monthly
+  - `determine_verdict()`: plan-aware (max/pro → waste reduction OR window efficiency; api → waste reduction OR cost)
+  - `build_share_card()`: max/pro says "Same $N/mo plan · Kx more output · API-equivalent waste eliminated"; api says "Cost per session: $X → $Y · Monthly savings: ~$Z/mo". Never says "you saved $X" for flat-plan users.
+  - Server: POST/GET/DELETE /api/fixes, POST /api/fixes/{id}/measure, GET /api/fixes/{id}/share-card
+  - CLI: `cli.py fixes` (list), `cli.py fix add` (interactive), `cli.py measure <id>` (plan-aware table + verdict + share card)
+  - Dashboard: "Fix tracker" section with 3-column cards, inline form, measure/share/revert buttons
+  - Pre-seeded: 4 Tidify fixes with live baseline (90 waste events, 96.14% window efficiency, $116.53/session, plan=max)
+  Files: fix_tracker.py, db.py, server.py, cli.py, templates/dashboard.html
+
+- **`cli.py scan --reprocess`** — re-tags every session row using current PROJECT_MAP; also backfills is_subagent + parent_session_id.
+  Files: cli.py:cmd_scan_reprocess
+
+- **`cli.py show-other`** — lists source paths of sessions tagged 'Other' for keyword debugging.
+  Files: cli.py:cmd_show_other
+
+- **`cli.py keys`** — prints dashboard_key + sync_token with warning banner.
+  Files: cli.py:cmd_keys
+
+- **`db.py:sync_project_map_from_config()`** — UPSERTs config.PROJECT_MAP into account_projects.
+  Files: db.py
+
+### Removed
+- **JK branding** → "Claudash v1.0" everywhere. Hardcoded IP removed from all code + docs.
+  Files: all .py, .html, .md files
+
+- **`config.py` personal project map** → empty `PROJECT_MAP = {}` with commented examples for new users.
+  Files: config.py
+
+- **Old dark-theme dashboard HTML** → replaced with editorial light theme (DM Serif Display + DM Mono + DM Sans, warm off-white palette).
+  Files: templates/dashboard.html (~900 lines), templates/accounts.html (~800 lines)
+
+### Architecture Decisions
+- **Plan-aware framing is the core Fix Tracker contract**: max/pro reports window efficiency + output multiplier + "API-equivalent waste eliminated"; api reports real dollar savings. Branching centralized in fix_tracker.py.
+  Impact: new plan types need one branch in one module, not six files.
+
+- **Baseline is self-contained JSON**: stored in fixes.baseline_json, not a reference. Immune to later formula changes.
+
+- **Verdict promotion is conservative**: needs verdict=improving AND days_elapsed≥7 to reach "confirmed".
+
+- **Waste attribution uses per-turn scaling**: per-session scaling collapses effective_window_pct to 0% under prompt caching.
+
+- **MCP server reads SQLite directly**: no HTTP dependency, works offline.
+
+### Known Issues / Not Done
+- **`insufficient_data` is the only verdict today**: pre-seeded fixes have 0 days elapsed. Real verdicts fire after 7+ days with 3+ sessions.
+- **OAuth token on this VPS expired**: script correctly reports failure; needs `claude` re-auth.
+- **No auto-measurement**: users must manually measure; cron-triggered auto-measure at 7d would be a follow-up.
+- **5-hour window still epoch-modulo**, not Anthropic's rolling window.
+- **CORS `*` on responses**: low risk with localhost bind.
+- **No tests**: all verification is grep + live SQL + live HTTP.

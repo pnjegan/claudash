@@ -1,0 +1,6 @@
+# Claudash has zero pip dependencies.
+# All modules used are Python standard library.
+# Python 3.8+ required.
+#
+# To verify: python3 --version
+# To start:  python3 cli.py dashboard

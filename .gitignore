@@ -1,7 +1,42 @@
+# Claudash — files intentionally kept out of source control
+
+# ── Runtime data (regenerated from JSONL on every scan) ──
+data/usage.db
+data/usage.db-wal
+data/usage.db-shm
+data/*.csv
+
+# ── Local tool variants ──
+tools/mac-sync-local.py
+tools/oauth_sync-local.py
+
+# ── Python build artifacts ──
 __pycache__/
 *.pyc
 *.pyo
-data/usage.db
-*.db
+*.pyd
+
+# ── Environment / secrets ──
 .env
-*.csv
+.env.local
+*.pem
+
+# ── OS junk ──
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ── Logs ──
+*.log
+
+# ── Editor state ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Packaging sandbox (if someone ever ships a PyPI package) ──
+claudash/
+dist/
+build/
+*.egg-info/

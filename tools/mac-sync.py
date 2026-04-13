@@ -15,9 +15,9 @@ Setup:
        curl http://localhost:8080/tools/mac-sync.py -o mac-sync.py
      The file is served WITHOUT the sync token pre-filled (by design — it
      used to be injected server-side, which leaked the token to any caller).
-  2. Retrieve your sync token on the VPS:
-       ssh root@<VPS_IP>
-       cd ~/projects/jk-usage-dashboard
+  2. Retrieve your sync token on the server:
+       ssh user@YOUR_VPS_IP
+       cd ~/claudash
        python3 cli.py claude-ai --sync-token
   3. Paste the token into SYNC_TOKEN below.
   4. Run: python3 mac-sync.py
@@ -377,8 +377,8 @@ if __name__ == "__main__":
 # (that used to leak the token to anyone who hit /tools/mac-sync.py).
 #
 # To get your token:
-#   ssh root@<VPS_IP>
-#   cd ~/projects/jk-usage-dashboard
+#   ssh user@YOUR_VPS_IP
+#   cd ~/claudash
 #   python3 cli.py claude-ai --sync-token
 #
 # Then paste the value into SYNC_TOKEN at the top of this file.
