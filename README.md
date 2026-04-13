@@ -95,6 +95,36 @@ python3 tools/mac-sync.py
 
 Full setup walkthrough in [SETUP.md](SETUP.md).
 
+## Keeping it running
+
+### Simple (background process)
+
+```bash
+nohup python3 cli.py dashboard > claudash.log 2>&1 &
+```
+
+### Recommended (PM2 — auto-restarts on crash)
+
+```bash
+bash tools/setup-pm2.sh
+```
+
+### Check if running
+
+```bash
+curl http://localhost:8080/health
+# or with PM2:
+pm2 status
+```
+
+### View logs
+
+```bash
+tail -f /tmp/claudash.log
+# or with PM2:
+pm2 logs claudash
+```
+
 ## Two sync methods for claude.ai browser data
 
 Claudash supports two ways to push your claude.ai session usage to the server.

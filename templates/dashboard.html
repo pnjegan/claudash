@@ -775,6 +775,16 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 </header>
 
 <main class="content">
+  <!-- Connection lost banner -->
+  <div id="health-banner" style="display:none; background:#FEE2E2; border:1px solid #EF4444; border-radius:10px; padding:18px 24px; margin-bottom:16px; font-family:var(--mono); font-size:13px; color:#991B1B; position:relative;">
+    <strong>Dashboard server not responding</strong><br>
+    Run: <code style="background:#FECACA; padding:2px 6px; border-radius:3px;">python3 cli.py dashboard</code><br>
+    On VPS: start the process on your server first
+    <button onclick="this.parentElement.style.display='none'" style="position:absolute; top:12px; right:16px; font-size:16px; color:#991B1B; cursor:pointer; background:none; border:none;">Dismiss</button>
+  </div>
+  <div id="reconnect-toast" style="display:none; background:#D1FAE5; border:1px solid #10B981; border-radius:8px; padding:10px 18px; margin-bottom:16px; font-family:var(--mono); font-size:13px; color:#065F46; text-align:center;">
+    Reconnected
+  </div>
   <!-- First-run banner -->
   <div id="first-run-banner" style="display:none; background:#FEF3C7; border:1px solid #F59E0B; border-radius:10px; padding:18px 24px; margin-bottom:24px; font-family:var(--mono); font-size:13px; color:#92400E; position:relative;">
     <strong>No data yet</strong> — run <code style="background:#FDE68A; padding:2px 6px; border-radius:3px;">python3 cli.py scan</code> in your terminal, then refresh this page.
@@ -1689,6 +1699,41 @@ function authHeaders() {
   // Auto-refresh
   refresh();
   refreshTimer = setInterval(refresh, REFRESH_MS);
+
+  // Health check — connection monitoring
+  var healthMisses = 0;
+  var wasDisconnected = false;
+  function healthCheck() {
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 3000);
+    fetch('/health', {signal: controller.signal})
+      .then(function(r) {
+        clearTimeout(timeout);
+        if (r.ok) {
+          if (wasDisconnected) {
+            $('health-banner').style.display = 'none';
+            $('reconnect-toast').style.display = 'block';
+            setTimeout(function() { $('reconnect-toast').style.display = 'none'; }, 3000);
+            wasDisconnected = false;
+            refresh();
+          }
+          healthMisses = 0;
+        } else {
+          healthMisses++;
+        }
+      })
+      .catch(function() {
+        clearTimeout(timeout);
+        healthMisses++;
+      })
+      .then(function() {
+        if (healthMisses >= 2) {
+          $('health-banner').style.display = 'block';
+          wasDisconnected = true;
+        }
+      });
+  }
+  setInterval(healthCheck, 30000);
 })();
 </script>
 </body>

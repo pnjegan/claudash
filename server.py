@@ -4,6 +4,7 @@ import sys
 import re
 import time
 import threading
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -38,6 +39,7 @@ TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templat
 # Response cache for /api/data — {account: (timestamp, result)}
 _data_cache = {}
 CACHE_TTL = 30  # seconds
+_server_start_time = time.time()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -236,8 +238,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
 
+        elif path == "/health":
+            conn = get_conn()
+            total = get_session_count(conn)
+            conn.close()
+            last_scan = get_last_scan_time()
+            last_scan_iso = datetime.fromtimestamp(last_scan, tz=timezone.utc).isoformat() if last_scan else None
+            self._serve_json({
+                "status": "ok",
+                "version": "1.0.0",
+                "uptime_seconds": int(time.time() - _server_start_time),
+                "records": total,
+                "last_scan": last_scan_iso,
+            })
+
         else:
-            self.send_error(404)
+            self._serve_404()
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -538,6 +554,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_404(self):
+        html = (
+            '<!DOCTYPE html>\n<html>\n<head>\n'
+            '  <title>Claudash</title>\n'
+            '  <meta http-equiv="refresh" content="5;url=/">\n'
+            '  <style>\n'
+            '    body { font-family: monospace; padding: 40px;\n'
+            '           background: #F5F0E8; color: #1A1916; }\n'
+            '    code { background: #E8E0D0; padding: 2px 6px; }\n'
+            '  </style>\n'
+            '</head>\n<body>\n'
+            '  <h2>Claudash</h2>\n'
+            '  <p>Page not found. Redirecting to dashboard in 5 seconds...</p>\n'
+            '  <p>If this keeps happening: <a href="/">click here</a></p>\n'
+            '</body>\n</html>'
+        )
+        body = html.encode("utf-8")
+        self.send_response(404)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 

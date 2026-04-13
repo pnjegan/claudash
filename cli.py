@@ -73,8 +73,32 @@ def cmd_dashboard():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--skip-init", action="store_true")
     args = parser.parse_args(sys.argv[2:])
-    port = args.port
 
+    MAX_RESTARTS = 5
+    restart_count = 0
+    restart_delay = 5  # seconds
+
+    while restart_count <= MAX_RESTARTS:
+        try:
+            _run_dashboard(args.port, args.no_browser, args.skip_init)
+            break  # clean exit
+        except KeyboardInterrupt:
+            print("\nClaudash stopped.")
+            break
+        except Exception as e:
+            restart_count += 1
+            if restart_count > MAX_RESTARTS:
+                print(f"Claudash crashed {MAX_RESTARTS} times. Giving up.")
+                print(f"Last error: {e}")
+                print(f"Check logs: tail /tmp/claudash.log")
+                break
+            print(f"Claudash crashed (attempt {restart_count}/{MAX_RESTARTS}): {e}")
+            print(f"Restarting in {restart_delay} seconds...")
+            time.sleep(restart_delay)
+            restart_delay = min(restart_delay * 2, 60)
+
+
+def _run_dashboard(port=8080, no_browser=False, skip_init=False):
     init_db()
     rows = scan_all()
 
@@ -88,7 +112,7 @@ def cmd_dashboard():
     accounts_customized = any(
         v.get("label") != "Personal (Max)" for v in accounts.values()
     )
-    if not args.skip_init and (total == 0 or (len(accounts) <= 1 and not accounts_customized)):
+    if not skip_init and (total == 0 or (len(accounts) <= 1 and not accounts_customized)):
         conn.close()
         print("First run detected. Running setup wizard...", flush=True)
         print("(Skip with: python3 cli.py dashboard --skip-init)", flush=True)
@@ -118,7 +142,7 @@ def cmd_dashboard():
             return False
         return not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
 
-    if not args.no_browser and not _is_headless():
+    if not no_browser and not _is_headless():
         import threading, webbrowser
         threading.Thread(
             target=lambda: (time.sleep(1.5), webbrowser.open(f"http://localhost:{port}")),
