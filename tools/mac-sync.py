@@ -63,7 +63,9 @@ def main():
         sys.exit(1)
 
     if sys.platform != "darwin":
-        print("WARNING: This script is designed for macOS. Cookie decryption may not work on other platforms.", file=sys.stderr)
+        print("ERROR: mac-sync.py requires macOS (uses macOS Keychain for cookie decryption)", file=sys.stderr)
+        print("For Claude Code users on any platform, use tools/oauth_sync.py instead", file=sys.stderr)
+        sys.exit(1)
 
     app_support = os.path.expanduser("~/Library/Application Support")
     pushed = 0

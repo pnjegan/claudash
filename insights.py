@@ -164,24 +164,26 @@ def generate_insights(conn=None):
                 break
 
     # ── 7. HEAVY_DAY_PATTERN ──
-    rows_30d = _fetch_rows(conn, since=_days_ago(30))
-    day_sessions = defaultdict(lambda: defaultdict(int))
-    for r in rows_30d:
-        dow = datetime.fromtimestamp(r["timestamp"], tz=timezone.utc).strftime("%A")
-        day_sessions[dow][r["project"]] += 1
+    for acct_key in ACCOUNTS:
+        rows_30d_acct = _fetch_rows(conn, acct_key, _days_ago(30))
+        day_sessions = defaultdict(lambda: defaultdict(int))
+        for r in rows_30d_acct:
+            dow = datetime.fromtimestamp(r["timestamp"], tz=timezone.utc).strftime("%A")
+            day_sessions[dow][r["project"]] += 1
 
-    if day_sessions:
-        heaviest = max(day_sessions.items(), key=lambda x: sum(x[1].values()))
-        day_name = heaviest[0]
-        total = sum(heaviest[1].values())
-        avg_day = sum(sum(v.values()) for v in day_sessions.values()) / len(day_sessions)
-        if total > avg_day * 1.5:
-            top_project = max(heaviest[1].items(), key=lambda x: x[1])[0]
-            if not _insight_exists_recent(conn, "heavy_day", day_name, hours=168):
-                msg = f"{day_name}s are your heaviest Claude day — {top_project} pattern"
-                detail = json.dumps({"day": day_name, "sessions": total, "top_project": top_project})
-                insert_insight(conn, "all", day_name, "heavy_day", msg, detail)
-                generated += 1
+        if day_sessions:
+            heaviest = max(day_sessions.items(), key=lambda x: sum(x[1].values()))
+            day_name = heaviest[0]
+            total = sum(heaviest[1].values())
+            avg_day = sum(sum(v.values()) for v in day_sessions.values()) / len(day_sessions)
+            if total > avg_day * 1.5:
+                top_project = max(heaviest[1].items(), key=lambda x: x[1])[0]
+                if not _insight_exists_recent(conn, "heavy_day", f"{acct_key}_{day_name}", hours=168):
+                    label = ACCOUNTS[acct_key]["label"]
+                    msg = f"{day_name}s are your heaviest Claude day — {top_project} pattern"
+                    detail = json.dumps({"day": day_name, "sessions": total, "top_project": top_project})
+                    insert_insight(conn, acct_key, f"{acct_key}_{day_name}", "heavy_day", msg, detail)
+                    generated += 1
 
     # ── 8. BEST_WINDOW ──
     for acct_key in ACCOUNTS:

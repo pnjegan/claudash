@@ -209,6 +209,11 @@ def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=Non
             if last_offset > 0:
                 f.seek(last_offset)
             for line in f:
+                if len(line) > 1_000_000:  # 1MB max line
+                    print(f"WARNING: skipping oversized line ({len(line)} bytes) in {filepath}", file=sys.stderr)
+                    continue
+                if not line.strip():
+                    continue
                 new_lines += 1
                 parsed = _parse_line(line)
                 if parsed:
@@ -307,22 +312,53 @@ def preview_paths(data_paths):
 
 def discover_claude_paths():
     import glob
+    import platform
     home = os.path.expanduser("~")
+    system = platform.system()
+
+    # Platform-specific candidate directories
+    if system == "Windows":
+        candidates = [
+            os.path.join(home, "AppData", "Roaming", "Claude", "projects"),
+            os.path.join(home, "AppData", "Local", "Claude", "projects"),
+            os.path.join(home, "AppData", "Roaming", "anthropic", "claude", "projects"),
+            os.path.join(home, ".claude", "projects"),
+        ]
+    elif system == "Darwin":
+        candidates = [
+            os.path.join(home, ".claude", "projects"),
+            os.path.join(home, "Library", "Application Support", "Claude", "projects"),
+        ]
+    else:  # Linux
+        candidates = [
+            os.path.join(home, ".claude", "projects"),
+            os.path.join(home, ".config", "claude", "projects"),
+            os.path.join(home, ".local", "share", "claude", "projects"),
+        ]
+
+    found = set()
+    for c in candidates:
+        if os.path.isdir(c):
+            found.add(c + "/")
+
+    # Also glob for .claude-* variants
     patterns = [
         os.path.join(home, ".claude", "projects"),
         os.path.join(home, ".claude-*", "projects"),
     ]
-    found = set()
     for pattern in patterns:
         for match in glob.glob(pattern):
             if os.path.isdir(match):
                 found.add(match + "/")
 
-    for entry in os.listdir(home):
-        if "claude" in entry.lower() and entry.startswith("."):
-            candidate = os.path.join(home, entry, "projects")
-            if os.path.isdir(candidate):
-                found.add(candidate + "/")
+    try:
+        for entry in os.listdir(home):
+            if "claude" in entry.lower() and entry.startswith("."):
+                candidate = os.path.join(home, entry, "projects")
+                if os.path.isdir(candidate):
+                    found.add(candidate + "/")
+    except OSError:
+        pass
 
     result = []
     for p in sorted(found):

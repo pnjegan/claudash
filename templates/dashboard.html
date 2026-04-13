@@ -820,7 +820,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   </section>
 
   <!-- Trends -->
-  <section class="section">
+  <section class="section" id="trends-section">
     <h2 class="section-title">7-day spend</h2>
     <div class="trends-wrap">
       <div class="trends-chart" id="trends-chart"></div>
@@ -829,7 +829,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   </section>
 
   <!-- Compaction + rightsizing -->
-  <section class="section">
+  <section class="section" id="compaction-section">
     <div class="two-col">
       <div class="panel">
         <h3>Compaction</h3>
@@ -1001,10 +1001,10 @@ function authHeaders() {
     }
 
     const cells = [
-      {label: 'Window', value: fmtPct(winPct), sub: (win.minutes_to_limit ? '~' + win.minutes_to_limit + ' min to cap' : 'safe'), cls: windowClass(winPct)},
-      {label: 'API equiv 30d', value: fmtMoney(apiEquiv), sub: 'vs pay-per-token', cls: ''},
-      {label: 'ROI', value: roi.toFixed(1) + 'x', sub: 'subscription multiple', cls: roi >= 5 ? 'green' : ''},
-      {label: 'Cache hit', value: fmtPct(cacheHit), sub: 'reads / (reads+writes)', cls: ''},
+      {label: 'Window', value: fmtPct(winPct), sub: (win.minutes_to_limit ? '~' + win.minutes_to_limit + ' min to cap' : 'approximate \u2014 UTC window alignment'), cls: windowClass(winPct)},
+      {label: 'API equiv 30d', value: fmtMoney(apiEquiv), sub: 'if you paid per-token at API list prices', cls: ''},
+      {label: 'ROI', value: roi.toFixed(1) + 'x', sub: 'API-equiv \u00f7 subscription cost', cls: roi >= 5 ? 'green' : ''},
+      {label: 'Cache hit', value: fmtPct(cacheHit), sub: 'cache reads / (cache reads + input)', cls: ''},
       {label: 'Sessions today', value: fmtNum(sessionsToday), sub: 'distinct conversations', cls: ''},
       todayCell,
     ];
@@ -1107,7 +1107,18 @@ function authHeaders() {
     const waste = data.waste_summary || {};
     $('proj-count').textContent = projs.length;
     if (!projs.length) {
-      $('proj-body').innerHTML = '<tr><td colspan="8" class="empty">No projects yet. Run a scan or check your data_paths in /accounts.</td></tr>';
+      // Context-aware empty state
+      var accts = data.accounts_list || [];
+      var curAcct = accts.find(function(a) { return a.account_id === currentAccount; });
+      var emptyMsg;
+      if (curAcct && curAcct.sessions_count === 0 && curAcct.has_browser_data) {
+        emptyMsg = 'Browser-only account \u2014 project data requires Claude Code';
+      } else if (data.total_rows > 0) {
+        emptyMsg = 'No sessions found for this account. Run: python3 cli.py scan';
+      } else {
+        emptyMsg = 'Configure your data paths in Accounts settings \u2192';
+      }
+      $('proj-body').innerHTML = '<tr><td colspan="8" class="empty">' + esc(emptyMsg) + '</td></tr>';
       return;
     }
     $('proj-body').innerHTML = projs.map((p, i) => {
@@ -1303,9 +1314,15 @@ function authHeaders() {
       );
     }).join('');
     const mp = trends.monthly_projection || 0;
-    const warn = mp > 5000 ? ' warn' : '';
+    const warn = mp > 1000 ? ' warn' : '';
     $('projection').className = 'projection' + warn;
-    $('projection').innerHTML = 'Monthly projection: <span class="val">' + fmtMoney(mp) + '</span>';
+    if (mp > 1000) {
+      $('projection').innerHTML = '\u26a0 High burn rate \u2014 <span class="val">' + fmtMoney(mp) + '</span> API equiv projected' +
+        '<div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">Based on last 7 days. Max plan cost: $100/mo</div>';
+    } else {
+      $('projection').innerHTML = 'Monthly projection: <span class="val">' + fmtMoney(mp) + '</span>' +
+        '<div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">at current 7-day burn rate</div>';
+    }
   }
 
   function renderCompaction(data) {
@@ -1351,14 +1368,36 @@ function authHeaders() {
     var banner = $('first-run-banner');
     if (data.first_run) { banner.style.display = 'block'; } else { banner.style.display = 'none'; }
     buildTabs(data.accounts_list || []);
+
+    // Detect browser-only account (no JSONL sessions, has browser data)
+    var accts = data.accounts_list || [];
+    var curAcct = accts.find(function(a) { return a.account_id === currentAccount; });
+    var isBrowserOnly = currentAccount !== 'all' && curAcct && curAcct.sessions_count === 0 && curAcct.has_browser_data;
+
     renderHero(data);
     renderWindows(data);
-    renderProjects(data);
+
+    if (isBrowserOnly) {
+      // Hide sections that require JSONL session data
+      $('trends-section').style.display = 'none';
+      $('compaction-section').style.display = 'none';
+      $('stories-section').style.display = 'none';
+      $('projects').innerHTML =
+        '<div class="empty" style="text-align:center;padding:24px">' +
+          'These insights require Claude Code sessions.<br>' +
+          '<span style="color:var(--text-tertiary)">Browser tracking is active \u2014 window data above is live.</span>' +
+        '</div>';
+    } else {
+      $('trends-section').style.display = '';
+      $('compaction-section').style.display = '';
+      renderProjects(data);
+      renderStories(data);
+      renderTrends(data);
+      renderCompaction(data);
+      renderRightsizing(data);
+    }
+
     renderInsights(data);
-    renderStories(data);
-    renderTrends(data);
-    renderCompaction(data);
-    renderRightsizing(data);
     renderFooter(data);
   }
 
@@ -1419,6 +1458,17 @@ function authHeaders() {
     const patternClass = ['floundering','cost_outlier','cache_spike'].includes(f.waste_pattern) ? 'red'
                        : 'amber';
 
+    // Resolve account label for fix card badge
+    var fixAcctLabel = '';
+    if (lastData && lastData.accounts_list) {
+      var pa = lastData.accounts_list.find(function(a) {
+        return lastData.projects && lastData.projects.some(function(p) {
+          return p.name === f.project && p.account === a.account_id;
+        });
+      });
+      if (pa) fixAcctLabel = pa.label || pa.account_id;
+    }
+
     // Left col
     const left =
       '<div class="col-left">' +
@@ -1426,6 +1476,7 @@ function authHeaders() {
           '<div class="status-dot ' + dotCls + '"></div>' +
           '<div class="fix-project">' + esc(f.project) + '</div>' +
           '<div class="pattern-pill ' + patternClass + '">' + esc((f.waste_pattern || '').replace(/_/g,' ')) + '</div>' +
+          (fixAcctLabel ? '<span style="font-size:11px;color:var(--text-tertiary);margin-left:4px">' + esc(fixAcctLabel) + '</span>' : '') +
         '</div>' +
         '<div class="fix-title">' + esc(f.title || '(no title)') + '</div>' +
         '<div class="fix-meta">applied ' + days + 'd ago · ' + esc(f.fix_type || 'other') + '</div>' +

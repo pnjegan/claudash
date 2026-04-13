@@ -2,6 +2,8 @@ import json
 import os
 import sys
 import re
+import time
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -32,6 +34,10 @@ from claude_ai_tracker import (
 )
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+
+# Response cache for /api/data — {account: (timestamp, result)}
+_data_cache = {}
+CACHE_TTL = 30  # seconds
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -250,6 +256,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self._read_body()
 
         if path == "/api/scan":
+            _data_cache.clear()
             rows = scan_all()
             conn = get_conn()
             insights_count = generate_insights(conn)
@@ -601,6 +608,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not target_id and accounts:
                 target_id = accounts[0]["account_id"]
                 target_label = accounts[0].get("label", target_id)
+                print(f"WARNING: no org_id match for {org_id}, falling back to {target_id}", file=sys.stderr)
+                print("Check your config.py ACCOUNTS org_id settings", file=sys.stderr)
 
             if not target_id:
                 self._serve_json({"success": False, "error": "No accounts configured"}, 400)
@@ -637,7 +646,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn.close()
 
     def _get_data(self, account):
-        conn = get_conn()
+        # Check cache first
+        cached = _data_cache.get(account)
+        if cached and (time.time() - cached[0]) < CACHE_TTL:
+            return cached[1]
+
+        # Run analysis with 10-second timeout
+        result_holder = [None]
+        error_holder = [None]
+
+        def run_analysis():
+            try:
+                conn = get_conn()
+                result_holder[0] = self._build_data(conn, account)
+                conn.close()
+            except Exception as e:
+                error_holder[0] = str(e)
+
+        t = threading.Thread(target=run_analysis)
+        t.start()
+        t.join(timeout=10)
+        if t.is_alive():
+            return {"error": "Analysis timeout — DB may be under load"}
+        if error_holder[0]:
+            return {"error": error_holder[0]}
+
+        data = result_holder[0]
+        _data_cache[account] = (time.time(), data)
+        return data
+
+    def _build_data(self, conn, account):
         data = full_analysis(conn, account)
         data["last_scan"] = get_last_scan_time()
         data["total_rows"] = get_session_count(conn)

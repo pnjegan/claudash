@@ -88,11 +88,23 @@ def cmd_dashboard():
     print(f"  ║  URL      : {'localhost:8080':<17s}║", flush=True)
     print("  ╚══════════════════════════════╝", flush=True)
     print(flush=True)
-    if VPS_IP and VPS_IP != "localhost":
+    def _is_headless():
+        import platform as _plat
+        if _plat.system() in ("Windows", "Darwin"):
+            return False
+        return not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
+
+    if _is_headless():
+        print("  Headless server detected — no browser auto-open", flush=True)
+        print(f"  To view dashboard, run on your local machine:", flush=True)
+        vps_host = VPS_IP if VPS_IP and VPS_IP != "localhost" else "YOUR_VPS_IP"
+        print(f"    ssh -L 8080:localhost:8080 user@{vps_host}", flush=True)
+        print(f"  Then open: http://localhost:8080", flush=True)
+    elif VPS_IP and VPS_IP != "localhost":
         print(f"  SSH tunnel: ssh -L 8080:localhost:8080 user@{VPS_IP}", flush=True)
+        print("  Then open http://localhost:8080 in your browser.", flush=True)
     else:
-        print("  SSH tunnel (if remote): ssh -L 8080:localhost:8080 user@YOUR_VPS_IP", flush=True)
-    print("  Then open http://localhost:8080 in your browser.", flush=True)
+        print("  Open http://localhost:8080 in your browser.", flush=True)
     print(flush=True)
 
     start_periodic_scan(interval_seconds=300)

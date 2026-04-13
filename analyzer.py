@@ -55,14 +55,13 @@ def account_metrics(conn, account="all"):
         sum(session_tokens_7d.values()) / len(session_tokens_7d) if session_tokens_7d else 0
     )
 
-    # Honest cache hit rate: reads / (reads + writes). A "miss" is a cache
-    # creation (write). Counting fresh input_tokens in the denominator biased
-    # the old formula toward ~100% because Claude Code's input_tokens is near
-    # zero once caching is active.
+    # Cache hit rate: cache_reads / (cache_reads + input_tokens).
+    # input_tokens = non-cached input tokens. This measures what fraction of
+    # total inbound context came from cache vs. fresh input.
     total_cache_read = sum(r["cache_read_tokens"] for r in rows_30d)
-    total_cache_create = sum(r["cache_creation_tokens"] for r in rows_30d)
-    total_cache_activity = total_cache_read + total_cache_create
-    cache_hit_rate = (total_cache_read / total_cache_activity * 100) if total_cache_activity > 0 else 0
+    total_input = sum(r["input_tokens"] for r in rows_30d)
+    cache_denominator = total_cache_read + total_input
+    cache_hit_rate = (total_cache_read / cache_denominator * 100) if cache_denominator > 0 else 0
 
     cache_roi_usd = 0.0
     for r in rows_30d:
@@ -125,6 +124,10 @@ def account_metrics(conn, account="all"):
 # ── Window metrics (per account) ──
 
 def window_metrics(conn, account="personal_max"):
+    # NOTE: Uses UTC epoch-modulo for window boundaries.
+    # Anthropic's actual window resets_at may differ by up to 5 hours.
+    # For precise window tracking, enable browser sync (mac-sync.py or oauth_sync.py)
+    # which reads the actual resets_at from claude.ai API.
     ACCOUNTS = get_accounts_config(conn)
     acct_info = ACCOUNTS.get(account, {})
     if not acct_info:
@@ -577,20 +580,21 @@ def subagent_metrics(conn, account="all"):
     with subagent_session_count, subagent_cost_usd, subagent_pct_of_total,
     and the top 5 spawning parent sessions by subagent cost."""
     acct_filter = None if account == "all" else account
+    conditions = []
     params = []
-    where = "1=1"
     if acct_filter:
-        where += " AND account = ?"
+        conditions.append("account = ?")
         params.append(acct_filter)
+    where_clause = (" AND ".join(conditions)) if conditions else "1=1"
 
     # Per-project rollup
     proj_rows = conn.execute(
-        f"SELECT project, "
-        f"       SUM(CASE WHEN is_subagent=1 THEN cost_usd ELSE 0 END) AS sub_cost, "
-        f"       SUM(CASE WHEN is_subagent=1 THEN 1 ELSE 0 END) AS sub_rows, "
-        f"       SUM(cost_usd) AS total_cost, "
-        f"       COUNT(DISTINCT CASE WHEN is_subagent=1 THEN session_id END) AS sub_sessions "
-        f"FROM sessions WHERE {where} GROUP BY project",
+        "SELECT project, "
+        "       SUM(CASE WHEN is_subagent=1 THEN cost_usd ELSE 0 END) AS sub_cost, "
+        "       SUM(CASE WHEN is_subagent=1 THEN 1 ELSE 0 END) AS sub_rows, "
+        "       SUM(cost_usd) AS total_cost, "
+        "       COUNT(DISTINCT CASE WHEN is_subagent=1 THEN session_id END) AS sub_sessions "
+        "FROM sessions WHERE " + where_clause + " GROUP BY project",
         params,
     ).fetchall()
 
@@ -607,15 +611,18 @@ def subagent_metrics(conn, account="all"):
         }
 
     # Top 5 spawning parents (per project) — parents ordered by subagent cost
+    top_conditions = ["is_subagent = 1", "parent_session_id IS NOT NULL", "project IS NOT NULL"]
+    if acct_filter:
+        top_conditions.append("account = ?")
+    top_where = " AND ".join(top_conditions)
     top_rows = conn.execute(
-        f"SELECT project, parent_session_id, "
-        f"       COUNT(DISTINCT session_id) AS spawned, "
-        f"       SUM(cost_usd) AS cost "
-        f"FROM sessions "
-        f"WHERE is_subagent = 1 AND parent_session_id IS NOT NULL "
-        f"  AND {where.replace('1=1', 'project IS NOT NULL')} "
-        f"GROUP BY project, parent_session_id "
-        f"ORDER BY cost DESC",
+        "SELECT project, parent_session_id, "
+        "       COUNT(DISTINCT session_id) AS spawned, "
+        "       SUM(cost_usd) AS cost "
+        "FROM sessions "
+        "WHERE " + top_where + " "
+        "GROUP BY project, parent_session_id "
+        "ORDER BY cost DESC",
         params,
     ).fetchall()
     buckets = {}

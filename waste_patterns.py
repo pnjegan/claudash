@@ -20,12 +20,14 @@ does NOT require new columns on the sessions table for tool_use data.
 That keeps the waste detection independent of the main ingestion path.
 """
 
+import hashlib
 import json
 import os
 import sqlite3
+import time
 from collections import defaultdict
 
-from db import get_conn, insert_waste_event, clear_waste_events
+from db import get_conn, insert_waste_event, clear_waste_events, get_setting, set_setting
 
 
 # ─── Parameters ──────────────────────────────────────────────────
@@ -106,20 +108,33 @@ def _file_session_id(filepath):
 
 # ─── Pattern detectors ───────────────────────────────────────────
 
+def _input_hash(inp):
+    """Short hash of tool input for deduplication. Identical (tool, input)
+    pairs are intentional retries, not floundering."""
+    if not inp:
+        return ""
+    return hashlib.md5(str(inp)[:200].encode()).hexdigest()[:8]
+
+
 def _detect_floundering(tool_calls):
     """Return (count, detail) for FLOUNDERING — runs of >=4 consecutive
-    identical tool names. Detail lists the runs. `tool_calls` is an
+    identical (tool_name, input_hash) pairs. Using input_hash means
+    running Bash("npm test") 5 times intentionally is NOT flagged —
+    only identical (tool, input) pairs count. `tool_calls` is an
     iterable of (turn, name, input) tuples."""
     runs = []
+    current_key = None
     current_name = None
     current_len = 0
     current_start = 0
-    for turn, name, _inp in tool_calls:
-        if name == current_name:
+    for turn, name, inp in tool_calls:
+        key = (name, _input_hash(inp))
+        if key == current_key:
             current_len += 1
         else:
             if current_name and current_len >= FLOUNDER_THRESHOLD:
                 runs.append({"tool": current_name, "length": current_len, "start_turn": current_start})
+            current_key = key
             current_name = name
             current_len = 1
             current_start = turn
@@ -154,11 +169,22 @@ def detect_all(conn=None):
         conn = get_conn()
         should_close = True
 
-    # Wipe the table — we recompute from scratch so stale events never linger.
-    clear_waste_events(conn)
+    # Incremental: only reprocess sessions newer than last waste scan
+    last_waste_scan = get_setting(conn, "last_waste_scan")
+    last_waste_ts = int(last_waste_scan) if last_waste_scan else 0
+
+    # Only clear waste events on full re-scan (first run or reset)
+    if last_waste_ts == 0:
+        clear_waste_events(conn)
 
     # ── 1 & 2: per-file detectors (FLOUNDERING, REPEATED_READS) ──
-    file_rows = conn.execute("SELECT file_path FROM scan_state ORDER BY file_path").fetchall()
+    if last_waste_ts > 0:
+        file_rows = conn.execute(
+            "SELECT file_path FROM scan_state WHERE last_scanned >= ? ORDER BY file_path",
+            (last_waste_ts,),
+        ).fetchall()
+    else:
+        file_rows = conn.execute("SELECT file_path FROM scan_state ORDER BY file_path").fetchall()
     flounder_count = 0
     repeated_count = 0
 
@@ -257,6 +283,8 @@ def detect_all(conn=None):
         )
         deep_count += 1
 
+    # Record scan timestamp for incremental next run
+    set_setting(conn, "last_waste_scan", str(int(time.time())))
     conn.commit()
 
     summary = {

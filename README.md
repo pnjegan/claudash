@@ -6,6 +6,9 @@ and claude.ai browser usage — for Max, Pro, and API plans.
 
 Zero pip dependencies. Single SQLite file. Single HTML page.
 
+<!-- Screenshot: run python3 cli.py dashboard, take screenshot of Personal (Max) tab -->
+<!-- ![Claudash Dashboard](docs/screenshot.png) -->
+
 ![license](https://img.shields.io/badge/license-MIT-black)
 ![python](https://img.shields.io/badge/python-3.8%2B-black)
 ![deps](https://img.shields.io/badge/dependencies-zero-black)
@@ -22,20 +25,62 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 - **MCP server** — expose Claudash data to Claude Code itself via Model Context Protocol
 - **Insights engine** — 14 rules that fire actionable notifications (cache spikes, compaction gaps, window risk, ROI milestones, etc.)
 
-## Quick start (5 minutes)
+## Platform Support
+
+| Platform | Core Dashboard | Browser Tracking | Notes |
+|---|---|---|---|
+| macOS + Claude Code | Full | via mac-sync.py or oauth_sync.py | Best experience |
+| Linux + Claude Code | Full | via oauth_sync.py | Recommended for VPS |
+| Windows + Claude Code | Core | Not supported | Path auto-detection added |
+| EC2/VPS | Full | Headless | Use SSH tunnel to view |
+| claude.ai browser only | Partial | Window tracking only | No project intelligence |
+
+## Getting Started
+
+### Requirements
+- Python 3.8+
+- Claude Code installed and at least one session run
+- macOS or Linux (Windows: core features work, browser tracking not supported)
+
+### Quick start (local Mac/Linux)
 
 ```bash
-git clone https://github.com/YOUR_USER/claudash
+git clone https://github.com/pnjegan/claudash
 cd claudash
 python3 cli.py dashboard
-# Opens at http://127.0.0.1:8080 (localhost only by design)
+# Browser message at http://localhost:8080
 ```
 
-If you're running on a VPS, forward the port over SSH:
+### Quick start (VPS/EC2)
 
 ```bash
-ssh -L 8080:localhost:8080 user@your-vps
-open http://localhost:8080
+# On your server:
+git clone https://github.com/pnjegan/claudash
+cd claudash
+nohup python3 cli.py dashboard > claudash.log 2>&1 &
+
+# On your local machine:
+ssh -L 8080:localhost:8080 your-server
+# Open: http://localhost:8080
+```
+
+### First run
+
+Claudash auto-detects `~/.claude/projects/` on startup.
+If it finds JSONL files, data appears immediately.
+If not, check that Claude Code has been used at least once.
+
+### Browser window tracking (optional)
+
+```bash
+# Claude Code users (any OS) — recommended:
+python3 tools/oauth_sync.py
+
+# macOS browser-only users:
+python3 tools/mac-sync.py
+
+# Automate via cron:
+# */5 * * * * python3 /path/to/oauth_sync.py
 ```
 
 Full setup walkthrough in [SETUP.md](SETUP.md).
@@ -55,6 +100,13 @@ Pick one based on how you use Claude.
 
 Both scripts POST to the same `/api/claude-ai/sync` endpoint gated by the
 `sync_token` from `python3 cli.py keys`.
+
+## Account configuration
+
+`config.py` sets the initial account configuration on first run.
+After first run, accounts are managed in the dashboard UI (Accounts page).
+Changes to `config.py` after first run have no effect — use the Accounts
+page to modify accounts.
 
 ## Commands
 
@@ -152,6 +204,23 @@ Every mutating endpoint requires `X-Dashboard-Key` (from `python3 cli.py keys`).
 - [SECURITY_TRUTH_MAP.md](SECURITY_TRUTH_MAP.md) — fresh-eyes security audit
 - [END_USER_REVIEW.md](END_USER_REVIEW.md) — cold-start review + scorecard
 - [CHANGELOG.md](CHANGELOG.md) — session history
+
+## Security
+
+Your data never leaves your machine.
+
+- Dashboard reads JSONL files Claude Code writes to `~/.claude/projects/`
+- All data stored in local SQLite (`data/usage.db`)
+- Dashboard served on localhost only — not accessible from internet
+- mac-sync.py reads browser cookies locally and pushes only your
+  window usage percentage to your dashboard server
+- No telemetry, no analytics, no external API calls
+- No data sent to Anthropic, GitHub, or any third party
+
+The dashboard key is stored in `data/usage.db` (SQLite).
+The DB file has 0600 permissions (owner read/write only).
+If you have filesystem access to the VPS, you have access
+to the key — this is by design for a single-user tool.
 
 ## License
 
