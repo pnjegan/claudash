@@ -314,3 +314,49 @@
 - **5-hour window still epoch-modulo**, not Anthropic's rolling window.
 - **CORS `*` on responses**: low risk with localhost bind.
 - **No tests**: all verification is grep + live SQL + live HTTP.
+
+## [2026-04-13] Session 5 — Account filtering, browser-only accounts, bug fixes
+
+### Fixed
+- **`window_token_limit=0` silently defaulted to 1M** — `db.py:415` used `or 1_000_000` which treats 0 as falsy in Python. Changed to explicit `is not None` check. Pro accounts now correctly show `tokens_limit=0`.
+  Files: db.py, analyzer.py (`record_window_burn` also used stale default)
+
+- **Insight `dotMap` missing 4 types** — `floundering_detected`, `subagent_cost_spike`, `budget_warning`, `budget_exceeded` all rendered as generic blue dots instead of red/amber.
+  Files: templates/dashboard.html
+
+- **`cost_spike_day` story card missing `badge` field** — only story type without one; would fail V5 assertion.
+  Files: db.py
+
+- **CORS hardcoded to `127.0.0.1` only** — rejected `localhost` origin headers. Now accepts both.
+  Files: server.py
+
+- **Insights leaked across account tabs** — `get_insights()` used exact `account = ?` match, excluding generic insights (`account='all'`). Changed to `account = ? OR account = 'all' OR account IS NULL`.
+  Files: db.py
+
+- **Stale insight "Combined window at 94% for Personal (Pro)"** — deleted from DB (id=44, outdated snapshot data).
+
+- **Story cards had no `account` field** — all 5 story queries lacked account in SELECT, making per-tab filtering impossible. Added `account` to all story dicts.
+  Files: db.py
+
+### Added
+- **Account tab filtering** — tabs now only show accounts with `sessions_count > 0` or `has_browser_data`. Hides empty accounts (work_pro had 0 JSONL sessions). `accounts_list` in `full_analysis()` includes `sessions_count` from a GROUP BY query.
+  Files: analyzer.py, templates/dashboard.html
+
+- **Browser-only account support** — accounts with 0 JSONL sessions but active claude.ai browser tracking (work_pro: 51% five-hour, 83% seven-day) now show: (1) tab visible via `has_browser_data`, (2) dedicated window panel with 5h + 7d bars labeled "browser only", (3) clean hero message instead of zeroed-out metric cards, (4) stories filtered to empty state.
+  Files: analyzer.py (browser snapshot query), templates/dashboard.html (renderWindows, renderHero, renderStories)
+
+- **Per-account story filtering** — `renderStories()` filters by `currentAccount` before rendering. Browser-only tabs show "No patterns detected yet for this account."
+  Files: templates/dashboard.html
+
+- **Browser window data in accounts_list** — `browser_window_pct`, `seven_day_pct`, `has_browser_data` fields from `claude_ai_snapshots` latest-per-account query.
+  Files: analyzer.py
+
+### Architecture Decisions
+- **Browser-only accounts are first-class tabs** — an account with 0 JSONL sessions but active `claude_ai_snapshots` data is shown in the tab bar and gets a tailored UI (browser window bars, no misleading zero metrics). This supports the "claude.ai browser-only user" persona.
+
+- **Insights and stories filter client-side by account** — insights are filtered server-side in `get_insights()` (SQL WHERE), stories are filtered client-side in `renderStories()` (JS filter after fetch). Both include generic/null-account items alongside account-specific ones.
+
+### Known Issues / Not Done
+- **`work_pro` still active in DB with 0 sessions** — not deactivated because it has legitimate browser tracking data. Label mismatch (DB says "Personal (Pro)", config says "Personal (Max)") is a previous-session data issue.
+- **No tests** — all verification via API checks + live HTTP.
+- **5-hour window still epoch-modulo**, not Anthropic's rolling window.
