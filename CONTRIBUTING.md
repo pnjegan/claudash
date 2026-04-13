@@ -17,7 +17,7 @@ Open an issue with:
 
 - Linux browser tracking
 - Performance caching layer
-- MCP server (beta to stable)
+- MCP server — verified working
 - Interactive session drilldown
 
 ## Development setup
