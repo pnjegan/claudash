@@ -699,13 +699,30 @@ def full_analysis(conn, account="all"):
     from db import get_insights
     active_insights = get_insights(conn, account if account != "all" else None, dismissed=0, limit=100)
 
-    # Include account list for dynamic tabs — attach session count so UI can hide empty accounts
+    # Include account list for dynamic tabs — attach session count + browser data
     acct_session_counts = {}
     for row in conn.execute("SELECT account, COUNT(*) as cnt FROM sessions GROUP BY account").fetchall():
         acct_session_counts[row["account"]] = row["cnt"]
-    accounts_list = [{"account_id": k, "label": v["label"], "color": v.get("color", "teal"),
-                      "sessions_count": acct_session_counts.get(k, 0)}
-                     for k, v in ACCOUNTS.items()]
+    # Latest browser snapshot per account (from claude.ai tracking)
+    browser_snaps = {}
+    for row in conn.execute(
+        "SELECT account_id, five_hour_utilization, seven_day_utilization "
+        "FROM claude_ai_snapshots "
+        "WHERE id IN (SELECT MAX(id) FROM claude_ai_snapshots GROUP BY account_id)"
+    ).fetchall():
+        five = row["five_hour_utilization"] or 0
+        seven = row["seven_day_utilization"] or 0
+        browser_snaps[row["account_id"]] = {"five": five, "seven": seven}
+    accounts_list = []
+    for k, v in ACCOUNTS.items():
+        bs = browser_snaps.get(k, {})
+        accounts_list.append({
+            "account_id": k, "label": v["label"], "color": v.get("color", "teal"),
+            "sessions_count": acct_session_counts.get(k, 0),
+            "browser_window_pct": bs.get("five", 0),
+            "seven_day_pct": bs.get("seven", 0),
+            "has_browser_data": bs.get("five", 0) > 0 or bs.get("seven", 0) > 0,
+        })
 
     # Sub-agent rollup, daily budget, waste summary
     sub_metrics = subagent_metrics(conn, account)

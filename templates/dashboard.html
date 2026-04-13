@@ -926,7 +926,7 @@ function authHeaders() {
 
   function buildTabs(accountsList) {
     const c = $('tabs');
-    const withSessions = (accountsList || []).filter(a => a.sessions_count > 0 || a.account_id === currentAccount);
+    const withSessions = (accountsList || []).filter(a => a.sessions_count > 0 || a.has_browser_data === true || a.account_id === currentAccount);
     let html = '<button class="tab' + (currentAccount === 'all' ? ' active' : '') + '" data-account="all">Combined</button>';
     for (const a of withSessions) {
       const cls = currentAccount === a.account_id ? ' active' : '';
@@ -1017,36 +1017,56 @@ function authHeaders() {
     const keys = currentAccount === 'all' ? accts.map(a => a.account_id) : [currentAccount];
 
     const blocks = keys.map(k => {
-      const w = windows[k]; if (!w) return '';
+      const w = windows[k];
       const ba = browser[k];
+      const acct = accts.find(a => a.account_id === k) || {};
+      const label = acct.label || k;
+      const hasSessions = (acct.sessions_count || 0) > 0;
+      const hasBrowser = ba && ba.status === 'active' && ba.snapshot;
+
+      if (!w && !hasBrowser) return '';
+
+      // Browser-only account (no JSONL sessions, has browser tracking)
+      if (!hasSessions && hasBrowser) {
+        const five = ba.snapshot.five_hour_utilization || ba.snapshot.pct_used || 0;
+        const seven = ba.snapshot.seven_day_utilization || 0;
+        return (
+          '<div class="window-panel">' +
+            '<div class="window-head">' +
+              '<span class="window-name">' + esc(label) + ' — claude.ai browser only</span>' +
+            '</div>' +
+            '<div class="bar-label">5-hour window — ' + fmtPct(five) + '</div>' +
+            '<div class="bar-track"><div class="bar-fill ' + windowClass(five) + '" style="width:' + Math.min(five, 100) + '%"></div></div>' +
+            '<div class="bar-label" style="margin-top:10px">7-day window — ' + fmtPct(seven) + '</div>' +
+            '<div class="bar-track"><div class="bar-fill ' + windowClass(seven) + '" style="width:' + Math.min(seven, 100) + '%"></div></div>' +
+            '<div class="window-stats"><span class="val" style="color:var(--text-tertiary)">No Claude Code sessions — browser tracking only</span></div>' +
+          '</div>'
+        );
+      }
+
+      if (!w) return '';
+
       const pct = w.window_pct || 0;
       const cls = windowClass(pct);
       const total = w.total_tokens || 0;
       const lim = w.tokens_limit || 0;
       const burn = w.burn_per_minute || 0;
       const reset = w.window_end ? new Date(w.window_end * 1000).toISOString().slice(11,16) + ' UTC' : '—';
-      const label = (accts.find(a => a.account_id === k) || {}).label || k;
       const history = (w.window_history || []).slice(0, 4);
       const sparks = history.length ? history.map(h => (h.pct_used >= 50 ? '●' : '○')).join('') : '○○○○';
 
       let browserBar = '';
-      if (ba && ba.status === 'active' && ba.snapshot) {
-        const bpct = ba.snapshot.pct_used || 0;
+      if (hasBrowser) {
+        const bFive = ba.snapshot.five_hour_utilization || ba.snapshot.pct_used || 0;
+        const bSeven = ba.snapshot.seven_day_utilization || 0;
         browserBar =
-          '<div class="bar-label">claude.ai browser — ' + fmtPct(bpct) + '</div>' +
-          '<div class="bar-track"><div class="bar-fill ' + windowClass(bpct) + '" style="width:' + Math.min(bpct, 100) + '%"></div></div>';
+          '<div class="bar-label">claude.ai browser 5h — ' + fmtPct(bFive) + '</div>' +
+          '<div class="bar-track"><div class="bar-fill ' + windowClass(bFive) + '" style="width:' + Math.min(bFive, 100) + '%"></div></div>' +
+          (bSeven > 0 ? '<div class="bar-label">claude.ai browser 7d — ' + fmtPct(bSeven) + '</div>' +
+          '<div class="bar-track"><div class="bar-fill ' + windowClass(bSeven) + '" style="width:' + Math.min(bSeven, 100) + '%"></div></div>' : '');
       }
 
-      // Skip window panel for accounts with no token limit (e.g., Pro message-based plans)
-      // unless they have browser tracking data
       if (lim === 0 && !browserBar && total === 0) return '';
-
-      var tokenStats = lim > 0
-        ? '<span><span class="val">' + fmtPct(pct) + '</span> used</span>' +
-          '<span><span class="val">' + fmtNum(Math.round(burn)) + '</span> tok/min</span>' +
-          '<span>resets <span class="val">' + esc(reset) + '</span></span>' +
-          '<span><span class="val">' + fmtNum(total) + '</span> / ' + fmtNum(lim) + '</span>'
-        : '<span class="val" style="color:var(--text-tertiary)">No token window (message-based plan)</span>';
 
       return (
         '<div class="window-panel">' +
@@ -1055,7 +1075,12 @@ function authHeaders() {
             '<span class="window-sparks">' + sparks + '</span>' +
           '</div>' +
           (lim > 0 ? '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + Math.min(pct, 100) + '%"></div></div>' : '') +
-          '<div class="window-stats">' + tokenStats + '</div>' +
+          (lim > 0 ? '<div class="window-stats">' +
+            '<span><span class="val">' + fmtPct(pct) + '</span> used</span>' +
+            '<span><span class="val">' + fmtNum(Math.round(burn)) + '</span> tok/min</span>' +
+            '<span>resets <span class="val">' + esc(reset) + '</span></span>' +
+            '<span><span class="val">' + fmtNum(total) + '</span> / ' + fmtNum(lim) + '</span>' +
+          '</div>' : '') +
           browserBar +
         '</div>'
       );
