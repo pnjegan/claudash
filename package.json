@@ -1,0 +1,33 @@
+{
+  "name": "claudash",
+  "version": "1.0.0",
+  "description": "Claude Code usage intelligence dashboard",
+  "bin": {
+    "claudash": "./bin/claudash.js"
+  },
+  "scripts": {
+    "start": "node bin/claudash.js"
+  },
+  "keywords": ["claude", "claude-code", "usage", "dashboard", "ai"],
+  "author": "Jegan Nagarajan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pnjegan/claudash"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "bin/",
+    "*.py",
+    "templates/",
+    "tools/",
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

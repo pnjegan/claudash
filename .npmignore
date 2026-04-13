@@ -1,0 +1,9 @@
+data/
+*.db
+*.log
+__pycache__/
+.git/
+.claude/
+.dev-cdc/
+tools/archive/
+claudash.pid

@@ -1000,10 +1000,22 @@ function authHeaders() {
       todayCell = {label: 'Today', value: fmtMoney(todayCost), sub: 'no budget set', cls: '', bar: null};
     }
 
+    // Efficiency score
+    const eff = data.efficiency || {};
+    const effScore = eff.score || 0;
+    const effGrade = eff.grade || '-';
+    function effGradeClass(g) {
+      if (g === 'A') return 'green';
+      if (g === 'B') return 'green';
+      if (g === 'C') return 'amber';
+      if (g === 'D') return 'amber';
+      return 'red';
+    }
+
     const cells = [
+      {label: 'Efficiency', value: effScore + '/100', sub: 'Grade ' + effGrade + ' \u2014 click for breakdown', cls: effGradeClass(effGrade), bar: effScore, barCls: effGradeClass(effGrade), id: 'eff-cell'},
       {label: 'Window', value: fmtPct(winPct), sub: (win.minutes_to_limit ? '~' + win.minutes_to_limit + ' min to cap' : 'approximate \u2014 UTC window alignment'), cls: windowClass(winPct)},
       {label: 'API equiv 30d', value: fmtMoney(apiEquiv), sub: 'if you paid per-token at API list prices', cls: ''},
-      {label: 'ROI', value: roi.toFixed(1) + 'x', sub: 'API-equiv \u00f7 subscription cost', cls: roi >= 5 ? 'green' : ''},
       {label: 'Cache hit', value: fmtPct(cacheHit), sub: 'cache reads / (cache reads + input)', cls: ''},
       {label: 'Sessions today', value: fmtNum(sessionsToday), sub: 'distinct conversations', cls: ''},
       todayCell,
@@ -1013,7 +1025,7 @@ function authHeaders() {
         ? '<div class="mini-bar"><div class="fill ' + (c.barCls || '') + '" style="width:' + c.bar + '%"></div></div>'
         : '';
       return (
-        '<div class="hero-cell">' +
+        '<div class="hero-cell"' + (c.id ? ' id="' + c.id + '"' : '') + '>' +
           '<div class="label">' + esc(c.label) + '</div>' +
           '<div class="value ' + c.cls + '">' + esc(c.value) + '</div>' +
           '<div class="sub">' + esc(c.sub) + '</div>' +
@@ -1021,6 +1033,36 @@ function authHeaders() {
         '</div>'
       );
     }).join('');
+
+    // Efficiency dimension breakdown — click to toggle
+    const effCell = document.getElementById('eff-cell');
+    if (effCell && eff.dimensions) {
+      effCell.style.cursor = 'pointer';
+      effCell.addEventListener('click', function() {
+        let panel = document.getElementById('eff-breakdown');
+        if (panel) { panel.remove(); return; }
+        panel = document.createElement('div');
+        panel.id = 'eff-breakdown';
+        panel.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin-top:12px;font-family:var(--mono);font-size:12px;line-height:2;position:absolute;z-index:50;box-shadow:0 4px 12px rgba(0,0,0,0.08);min-width:380px';
+        const dims = eff.dimensions || [];
+        let html = dims.map(d => {
+          const filled = Math.round(d.score / 5);
+          const empty = 20 - filled;
+          const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
+          const wPct = Math.round(d.weight * 100);
+          return '<div>' + esc(d.label.substring(0, 20).padEnd(20)) + ' ' + bar + ' ' + String(d.score).padStart(3) + '/100  ' + wPct + '%</div>';
+        }).join('');
+        html += '<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px">';
+        html += 'Overall: ' + effScore + '/100 \u00b7 Grade ' + effGrade;
+        html += '</div>';
+        if (eff.top_improvement) {
+          html += '<div style="color:var(--accent-amber);margin-top:2px">Top improvement: ' + esc(eff.top_improvement) + '</div>';
+        }
+        panel.innerHTML = html;
+        effCell.style.position = 'relative';
+        effCell.appendChild(panel);
+      });
+    }
   }
 
   function renderWindows(data) {

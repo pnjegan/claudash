@@ -679,6 +679,130 @@ def daily_budget_metrics(conn, account="all"):
     return result
 
 
+# ── Efficiency Score ──
+
+def compute_efficiency_score(conn, account="all"):
+    """
+    Compute Claude Code efficiency score 0-100.
+    Five dimensions, weighted:
+      1. Cache efficiency    25% — cache_read/(cache_read+input_tokens)
+      2. Model right-sizing  25% — % sessions NOT using Opus for <300 tok output
+      3. Window discipline   20% — avg window utilization (ideal 60-80%)
+      4. Floundering rate    20% — % sessions without floundering
+      5. Compaction          10% — % long sessions that used compaction
+    """
+    cutoff = _days_ago(30)
+    where = "timestamp > ?"
+    params = [cutoff]
+    if account and account != "all":
+        where += " AND account = ?"
+        params.append(account)
+
+    # Dimension 1: Cache efficiency
+    r = conn.execute(
+        f"SELECT COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(input_tokens), 0) "
+        f"FROM sessions WHERE {where}", params
+    ).fetchone()
+    cache_reads = r[0] or 0
+    cache_inputs = r[1] or 0
+    denom = cache_reads + cache_inputs
+    cache_score = round(cache_reads / denom * 100) if denom > 0 else 0
+
+    # Dimension 2: Model right-sizing
+    total_opus = conn.execute(
+        f"SELECT COUNT(*) FROM sessions "
+        f"WHERE model LIKE '%opus%' AND {where}", params
+    ).fetchone()[0]
+    opus_short = conn.execute(
+        f"SELECT COUNT(*) FROM sessions "
+        f"WHERE model LIKE '%opus%' AND output_tokens < 300 "
+        f"AND {where}", params
+    ).fetchone()[0]
+    if total_opus > 0:
+        opus_waste_pct = opus_short / total_opus
+        model_score = round((1 - opus_waste_pct) * 100)
+    else:
+        model_score = 100
+
+    # Dimension 3: Window discipline (ideal 60-80%)
+    avg_window = conn.execute(
+        "SELECT AVG(pct_used) FROM window_burns "
+        "WHERE window_start > ? AND pct_used > 0",
+        [cutoff]
+    ).fetchone()[0] or 0
+    if avg_window < 60:
+        window_score = round(avg_window / 60 * 70)
+    elif avg_window <= 80:
+        window_score = round(70 + (avg_window - 60) / 20 * 30)
+    else:
+        window_score = round(100 - (avg_window - 80) * 2)
+    window_score = max(0, min(100, window_score))
+
+    # Dimension 4: Floundering rate
+    total_sessions = conn.execute(
+        f"SELECT COUNT(DISTINCT session_id) FROM sessions WHERE {where}",
+        params
+    ).fetchone()[0] or 1
+    flounder_sessions = conn.execute(
+        "SELECT COUNT(DISTINCT session_id) FROM waste_events "
+        "WHERE pattern_type='floundering' AND detected_at > ?",
+        [cutoff]
+    ).fetchone()[0]
+    flounder_rate = flounder_sessions / total_sessions
+    flounder_score = round((1 - min(flounder_rate * 10, 1)) * 100)
+
+    # Dimension 5: Compaction discipline
+    compact_events = conn.execute(
+        f"SELECT COUNT(*) FROM sessions "
+        f"WHERE compaction_detected=1 AND {where}", params
+    ).fetchone()[0]
+    compact_rate = compact_events / total_sessions
+    compaction_score = min(round(compact_rate / 0.05 * 100), 100)
+
+    # Weighted total
+    dimensions = [
+        {"name": "cache", "score": cache_score, "weight": 0.25,
+         "label": "Cache efficiency",
+         "detail": f"{cache_score}% of input tokens served from cache"},
+        {"name": "model", "score": model_score, "weight": 0.25,
+         "label": "Model right-sizing",
+         "detail": f"{100 - model_score}% of Opus sessions had short outputs"},
+        {"name": "window", "score": window_score, "weight": 0.20,
+         "label": "Window discipline",
+         "detail": f"{round(avg_window, 1)}% avg window utilization (ideal: 60-80%)"},
+        {"name": "flounder", "score": flounder_score, "weight": 0.20,
+         "label": "Floundering rate",
+         "detail": f"{flounder_sessions} stuck sessions detected"},
+        {"name": "compaction", "score": compaction_score, "weight": 0.10,
+         "label": "Compaction discipline",
+         "detail": f"{compact_events} compaction events in 30d"},
+    ]
+
+    total = round(sum(d["score"] * d["weight"] for d in dimensions))
+    total = max(0, min(100, total))
+
+    if total >= 90:
+        grade = "A"
+    elif total >= 80:
+        grade = "B"
+    elif total >= 70:
+        grade = "C"
+    elif total >= 60:
+        grade = "D"
+    else:
+        grade = "F"
+
+    worst = min(dimensions, key=lambda d: d["score"] * d["weight"])
+
+    return {
+        "score": total,
+        "grade": grade,
+        "dimensions": dimensions,
+        "top_improvement": worst["label"],
+        "top_improvement_detail": worst["detail"],
+    }
+
+
 # ── Full analysis ──
 
 def full_analysis(conn, account="all"):
@@ -740,6 +864,12 @@ def full_analysis(conn, account="all"):
     except Exception:
         waste_summary = {}
 
+    # Efficiency score
+    try:
+        efficiency = compute_efficiency_score(conn, account)
+    except Exception:
+        efficiency = {"score": 0, "grade": "-", "dimensions": [], "top_improvement": "unknown", "top_improvement_detail": ""}
+
     return {
         "account": account,
         "account_label": ACCOUNTS.get(account, {}).get("label", "All Accounts"),
@@ -755,5 +885,6 @@ def full_analysis(conn, account="all"):
         "subagent_metrics": sub_metrics,
         "daily_budget": budget_metrics,
         "waste_summary": waste_summary,
+        "efficiency": efficiency,
         "generated_at": _now(),
     }

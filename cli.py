@@ -40,6 +40,7 @@ Commands:
   mcp           Print MCP server settings.json snippet + run a quick test
   keys          Print dashboard_key and sync_token (sensitive — keep private)
   keys --rotate Regenerate dashboard_key (invalidates existing browser sessions)
+  init          First-run setup wizard (3 questions, then start)
   claude-ai     Show claude.ai browser tracking status
   claude-ai --sync-token          Print sync token (for tools/mac-sync.py)
   claude-ai --setup <account_id>  Paste a claude.ai session key interactively
@@ -54,6 +55,7 @@ from scanner import scan_all, start_periodic_scan
 from analyzer import (
     account_metrics, project_metrics, window_intelligence,
     trend_metrics, compaction_metrics, model_rightsizing,
+    compute_efficiency_score,
 )
 from insights import generate_insights
 from server import start_server
@@ -65,6 +67,14 @@ from claude_ai_tracker import (
 
 
 def cmd_dashboard():
+    import argparse
+    parser = argparse.ArgumentParser(prog="claudash dashboard", add_help=False)
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--skip-init", action="store_true")
+    args = parser.parse_args(sys.argv[2:])
+    port = args.port
+
     init_db()
     rows = scan_all()
 
@@ -73,8 +83,22 @@ def cmd_dashboard():
     total = get_session_count(conn)
     db_mb = get_db_size_mb()
     accounts = get_accounts_config(conn)
+
+    # First-run detection: no sessions or only default account label
+    accounts_customized = any(
+        v.get("label") != "Personal (Max)" for v in accounts.values()
+    )
+    if not args.skip_init and (total == 0 or (len(accounts) <= 1 and not accounts_customized)):
+        conn.close()
+        print("First run detected. Running setup wizard...", flush=True)
+        print("(Skip with: python3 cli.py dashboard --skip-init)", flush=True)
+        print(flush=True)
+        cmd_init()
+        return
+
     conn.close()
 
+    url_str = f"localhost:{port}"
     n_accts = f"{len(accounts)} configured"
     db_str = f"{db_mb}MB"
 
@@ -85,7 +109,7 @@ def cmd_dashboard():
     print(f"  ║  Records  : {total:<17,}║", flush=True)
     print(f"  ║  Accounts : {n_accts:<17s}║", flush=True)
     print(f"  ║  DB       : {db_str:<17s}║", flush=True)
-    print(f"  ║  URL      : {'localhost:8080':<17s}║", flush=True)
+    print(f"  ║  URL      : {url_str:<17s}║", flush=True)
     print("  ╚══════════════════════════════╝", flush=True)
     print(flush=True)
     def _is_headless():
@@ -94,24 +118,120 @@ def cmd_dashboard():
             return False
         return not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
 
+    if not args.no_browser and not _is_headless():
+        import threading, webbrowser
+        threading.Thread(
+            target=lambda: (time.sleep(1.5), webbrowser.open(f"http://localhost:{port}")),
+            daemon=True,
+        ).start()
+
     if _is_headless():
         print("  Headless server detected — no browser auto-open", flush=True)
         print(f"  To view dashboard, run on your local machine:", flush=True)
         vps_host = VPS_IP if VPS_IP and VPS_IP != "localhost" else "YOUR_VPS_IP"
-        print(f"    ssh -L 8080:localhost:8080 user@{vps_host}", flush=True)
-        print(f"  Then open: http://localhost:8080", flush=True)
+        print(f"    ssh -L {port}:localhost:{port} user@{vps_host}", flush=True)
+        print(f"  Then open: http://localhost:{port}", flush=True)
     elif VPS_IP and VPS_IP != "localhost":
-        print(f"  SSH tunnel: ssh -L 8080:localhost:8080 user@{VPS_IP}", flush=True)
-        print("  Then open http://localhost:8080 in your browser.", flush=True)
+        print(f"  SSH tunnel: ssh -L {port}:localhost:{port} user@{VPS_IP}", flush=True)
+        print(f"  Then open http://localhost:{port} in your browser.", flush=True)
     else:
-        print("  Open http://localhost:8080 in your browser.", flush=True)
+        print(f"  Open http://localhost:{port} in your browser.", flush=True)
     print(flush=True)
 
     start_periodic_scan(interval_seconds=300)
     poll_claude_ai()
     start_claude_ai_poll(interval_seconds=300)
 
-    start_server(port=8080)
+    start_server(port=port)
+
+
+def cmd_init():
+    """Interactive first-run setup wizard."""
+    init_db()
+    conn = get_conn()
+
+    print(flush=True)
+    print("  Claudash Setup Wizard", flush=True)
+    print("  " + "-" * 40, flush=True)
+    print("  Answer 3 questions to configure your dashboard.", flush=True)
+    print(flush=True)
+
+    # Question 1: Plan type
+    print("  1. What Claude plan are you on?", flush=True)
+    print("     [1] Max  ($100/mo — 1M tokens/5hr window)", flush=True)
+    print("     [2] Pro  ($20/mo  — message-based limits)", flush=True)
+    print("     [3] API  (pay per token)", flush=True)
+    print("     [4] Team (API with org billing)", flush=True)
+    try:
+        choice = input("     Enter 1-4: ").strip()
+    except EOFError:
+        choice = "1"
+    plan_map = {
+        "1": ("max", 100.0, 1_000_000),
+        "2": ("pro", 20.0, 0),
+        "3": ("api", 0.0, 0),
+        "4": ("api", 0.0, 0),
+    }
+    plan, cost, tokens = plan_map.get(choice, ("max", 100.0, 1_000_000))
+
+    # Question 1b: Monthly cost (if API)
+    if plan == "api":
+        try:
+            cost_input = input("     Monthly API spend (approx $): ").strip()
+            cost = float(cost_input)
+        except (ValueError, EOFError):
+            cost = 0.0
+
+    # Question 2: Show detected projects
+    print(flush=True)
+    print("  2. Detected Claude Code projects:", flush=True)
+    projects = conn.execute(
+        "SELECT project, COUNT(*) as sessions "
+        "FROM sessions GROUP BY project "
+        "ORDER BY sessions DESC LIMIT 10"
+    ).fetchall()
+
+    if projects:
+        for i, p in enumerate(projects, 1):
+            print(f"     {i}. {p['project']} ({p['sessions']} sessions)", flush=True)
+        print("     These were auto-detected from your JSONL files.", flush=True)
+        print("     Add custom project names in config.py PROJECT_MAP", flush=True)
+    else:
+        print("     No sessions found yet.", flush=True)
+        print("     Run 'python3 cli.py scan' after using Claude Code.", flush=True)
+
+    # Question 3: Account name
+    print(flush=True)
+    print("  3. What should we call this account?", flush=True)
+    print("     (e.g. 'Personal', 'Work', 'My Mac')", flush=True)
+    try:
+        name = input("     Account name: ").strip() or "Personal"
+    except EOFError:
+        name = "Personal"
+
+    # Save to DB
+    acct_row = conn.execute("SELECT account_id FROM accounts LIMIT 1").fetchone()
+    if acct_row:
+        conn.execute(
+            "UPDATE accounts SET label=?, plan=?, monthly_cost_usd=?, "
+            "window_token_limit=? WHERE account_id=?",
+            (f"{name} ({plan.title()})", plan, cost, tokens, acct_row["account_id"]),
+        )
+        conn.commit()
+
+    print(flush=True)
+    print("  Dashboard configured!", flush=True)
+    print(f"    Account: {name} ({plan.title()})", flush=True)
+    print(f"    Plan cost: ${cost}/mo", flush=True)
+    if tokens:
+        print(f"    Window: {tokens:,} tokens per 5 hours", flush=True)
+    print(flush=True)
+    print("  Starting dashboard...", flush=True)
+    print(flush=True)
+    conn.close()
+
+    # Auto-start dashboard after init
+    cmd_dashboard()
 
 
 def cmd_scan():
@@ -621,6 +741,15 @@ def cmd_stats():
         print(f"  Sessions today: {am['sessions_today']}  |  Cache ROI: ${am['cache_roi_usd']:.2f}")
         print()
 
+    # Efficiency score (across all accounts)
+    try:
+        eff = compute_efficiency_score(conn)
+        print(f"  Efficiency Score: {eff['score']}/100 (Grade {eff['grade']})")
+        print(f"  Top improvement: {eff['top_improvement']}")
+        print()
+    except Exception:
+        pass
+
     print("  Run `python3 cli.py keys` to retrieve the dashboard_key (never printed here).")
     print()
 
@@ -853,6 +982,7 @@ def main():
 
     commands = {
         "dashboard": cmd_dashboard,
+        "init": cmd_init,
         "scan": cmd_scan,
         "show-other": cmd_show_other,
         "stats": cmd_stats,

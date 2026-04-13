@@ -15,6 +15,7 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 
 ## What you get
 
+- **Efficiency Score** — single 0-100 score across 5 dimensions: cache, model right-sizing, window discipline, floundering rate, compaction. Honest, actionable, comparable over time.
 - **Subscription ROI math** — see your API-equivalent cost vs. what you pay Anthropic
 - **Per-project attribution** — cost, sessions, cache hit rate, model efficiency, week-over-week change
 - **5-hour window intelligence** — burn rate, predicted exhaust, safe-to-start check, best autonomous-run hour
@@ -42,13 +43,22 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 - Claude Code installed and at least one session run
 - macOS or Linux (Windows: core features work, browser tracking not supported)
 
-### Quick start (local Mac/Linux)
+### Fastest (via npx — no install needed)
+
+```bash
+npx claudash
+```
+
+Requires Node.js 16+ and Python 3.8+.
+Auto-installs, opens browser, detects your Claude Code data.
+
+### Manual install (local Mac/Linux)
 
 ```bash
 git clone https://github.com/pnjegan/claudash
 cd claudash
 python3 cli.py dashboard
-# Browser message at http://localhost:8080
+# Browser opens at http://localhost:8080
 ```
 
 ### Quick start (VPS/EC2)
