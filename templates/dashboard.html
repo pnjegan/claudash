@@ -1244,11 +1244,15 @@ function authHeaders() {
   function renderStories() {
     fetch('/api/real-story').then(function(r) { return r.json(); }).then(function(resp) {
       var stories = resp.stories || [];
+      if (currentAccount !== 'all') {
+        stories = stories.filter(function(s) { return !s.account || s.account === currentAccount; });
+      }
       var section = $('stories-section');
       var grid = $('story-grid');
       $('story-count').textContent = stories.length;
       if (!stories.length) {
-        section.style.display = 'none';
+        section.style.display = '';
+        grid.innerHTML = '<div class="empty">No patterns detected yet for this account.</div>';
         return;
       }
       section.style.display = '';

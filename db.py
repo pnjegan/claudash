@@ -1027,7 +1027,7 @@ def get_real_story_insights():
 
     # STORY 1 — Model mismatch: Opus doing Sonnet-level work
     rows = conn.execute(
-        "SELECT project, AVG(output_tokens) as avg_out, COUNT(*) as sessions "
+        "SELECT project, account, AVG(output_tokens) as avg_out, COUNT(*) as sessions "
         "FROM sessions "
         "WHERE model LIKE '%opus%' AND timestamp > ? "
         "GROUP BY project "
@@ -1038,6 +1038,7 @@ def get_real_story_insights():
     for r in rows:
         stories.append({
             "type": "model_mismatch", "badge": "Model Mismatch",
+            "account": r["account"],
             "title": f"{r['project']}: Opus doing Sonnet-level work",
             "finding": (
                 f"{r['sessions']} sessions, avg {int(r['avg_out'])} tokens output — "
@@ -1051,7 +1052,7 @@ def get_real_story_insights():
 
     # STORY 2 — Floundering (repeated tool failures)
     rows = conn.execute(
-        "SELECT project, COUNT(*) as events "
+        "SELECT project, account, COUNT(*) as events "
         "FROM waste_events "
         "WHERE pattern_type = 'floundering' AND detected_at > ? "
         "GROUP BY project "
@@ -1062,6 +1063,7 @@ def get_real_story_insights():
     for r in rows:
         stories.append({
             "type": "floundering_detected", "badge": "Got Stuck",
+            "account": r["account"],
             "title": f"{r['project']}: Claude got stuck {r['events']} times",
             "finding": (
                 f"Detected {r['events']} sessions where the same tool call "
@@ -1075,7 +1077,7 @@ def get_real_story_insights():
 
     # STORY 3 — Repeated reads
     rows = conn.execute(
-        "SELECT project, COUNT(*) as events "
+        "SELECT project, account, COUNT(*) as events "
         "FROM waste_events "
         "WHERE pattern_type = 'repeated_reads' AND detected_at > ? "
         "GROUP BY project "
@@ -1086,6 +1088,7 @@ def get_real_story_insights():
     for r in rows:
         stories.append({
             "type": "repeated_reads", "badge": "Repeated Reads",
+            "account": r["account"],
             "title": f"{r['project']}: Same files read {r['events']} times",
             "finding": (
                 f"Detected {r['events']} sessions where the same file was "
@@ -1099,7 +1102,7 @@ def get_real_story_insights():
 
     # STORY 4 — Subagent cost spike
     row = conn.execute(
-        "SELECT parent_session_id, project, "
+        "SELECT parent_session_id, project, account, "
         "  COUNT(*) as subagent_count, "
         "  SUM(cost_usd) as subagent_cost "
         "FROM sessions "
@@ -1112,6 +1115,7 @@ def get_real_story_insights():
     if row and row["subagent_count"]:
         stories.append({
             "type": "subagent_spike", "badge": "Sub-agent Spike",
+            "account": row["account"],
             "title": f"{row['project']}: One session spawned {row['subagent_count']} sub-agents",
             "finding": (
                 f"Single parent session created {row['subagent_count']} sub-agents "
@@ -1137,6 +1141,7 @@ def get_real_story_insights():
             multiplier = round(top["daily_cost"] / avg_daily, 1)
             stories.append({
                 "type": "cost_spike_day", "badge": "Cost Spike",
+                "account": None,
                 "title": f"{top['day'][5:]}: {multiplier}x your normal daily spend",
                 "finding": (
                     f"Highest day was ${top['daily_cost']:.2f} API equiv — "
