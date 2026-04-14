@@ -988,7 +988,11 @@ def get_latest_claude_ai_snapshot(conn, account_id):
         "SELECT * FROM claude_ai_snapshots WHERE account_id = ? ORDER BY polled_at DESC LIMIT 1",
         (account_id,),
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    d = dict(row)
+    d.pop("raw_response", None)
+    return d
 
 
 def get_claude_ai_snapshot_history(conn, account_id, limit=48):
@@ -996,7 +1000,12 @@ def get_claude_ai_snapshot_history(conn, account_id, limit=48):
         "SELECT * FROM claude_ai_snapshots WHERE account_id = ? ORDER BY polled_at DESC LIMIT ?",
         (account_id, limit),
     ).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    out = []
+    for r in reversed(rows):
+        d = dict(r)
+        d.pop("raw_response", None)
+        out.append(d)
+    return out
 
 
 # ── Settings ──

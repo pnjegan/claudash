@@ -81,11 +81,15 @@ function isPortInUse(port) {
 
 function installClaudash() {
   if (fs.existsSync(path.join(INSTALL_DIR, 'cli.py'))) {
-    try {
-      execSync('git -C "' + INSTALL_DIR + '" pull --quiet 2>/dev/null');
-      console.log('Claudash updated');
-    } catch (e) {
-      // offline or not a git repo — use what we have
+    // Already installed. Do NOT auto-pull — users should not have code silently
+    // updated on every launch. Run `claudash --update` to pull latest.
+    if (process.argv.includes('--update')) {
+      try {
+        execSync('git -C "' + INSTALL_DIR + '" pull --quiet 2>/dev/null');
+        console.log('Claudash updated');
+      } catch (e) {
+        console.error('Update failed (offline or not a git repo)');
+      }
     }
     return;
   }

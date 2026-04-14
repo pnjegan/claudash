@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 import sys
@@ -260,6 +261,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if not self._check_origin():
+            return
+
         # Body size guard — cap at 100 KB
         if int(self.headers.get("Content-Length", 0) or 0) > 102400:
             self._serve_json({"error": "request too large"}, 413)
@@ -419,6 +423,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if not self._check_origin():
+            return
+
         if int(self.headers.get("Content-Length", 0) or 0) > 102400:
             self._serve_json({"error": "request too large"}, 413)
             return
@@ -448,6 +455,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if not self._check_origin():
+            return
 
         if not self._require_dashboard_key():
             return
@@ -518,6 +528,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return {}
         return {}
 
+    def _check_origin(self):
+        """Reject cross-origin mutating requests. Origin is only sent by browsers;
+        direct curl/script calls omit it and are allowed through (auth still required)."""
+        allowed = {"http://127.0.0.1:8080", "http://localhost:8080"}
+        origin = self.headers.get("Origin", "")
+        if origin and origin not in allowed:
+            self._serve_json({"error": "forbidden"}, 403)
+            return False
+        return True
+
     def _require_dashboard_key(self):
         """Enforce X-Dashboard-Key header on write endpoints. Returns True on pass;
         on failure writes 401 and returns False."""
@@ -527,7 +547,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             stored = get_setting(conn, "dashboard_key")
         finally:
             conn.close()
-        if not stored or received != stored.strip():
+        if not stored or not hmac.compare_digest(received.encode("utf-8"), stored.strip().encode("utf-8")):
             self._serve_json({"error": "unauthorized"}, 401)
             return False
         return True
@@ -606,7 +626,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         conn = get_conn()
         try:
             stored_token = get_setting(conn, "sync_token")
-            if not stored_token or received_token != stored_token.strip():
+            if not stored_token or not hmac.compare_digest(received_token.encode("utf-8"), stored_token.strip().encode("utf-8")):
                 self._serve_json({"success": False, "error": "Invalid sync token"}, 403)
                 return
 
