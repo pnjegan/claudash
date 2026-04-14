@@ -42,6 +42,7 @@ Commands:
   keys --rotate Regenerate dashboard_key (invalidates existing browser sessions)
   init          First-run setup wizard (3 questions, then start)
   claude-ai     Show claude.ai browser tracking status
+  sync-daemon   Auto-sync browser data every 5 minutes (background)
   claude-ai --sync-token          Print sync token (for tools/mac-sync.py)
   claude-ai --setup <account_id>  Paste a claude.ai session key interactively
 
@@ -882,6 +883,13 @@ def cmd_export():
     print(f"Exported {len(rows)} rows to {outpath}")
 
 
+def cmd_sync_daemon():
+    """Run the sync daemon that pushes claude.ai browser data every 5 min."""
+    daemon = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "tools", "sync-daemon.py")
+    os.execv(sys.executable, [sys.executable, daemon])
+
+
 def cmd_keys():
     """Print dashboard_key and sync_token. Sensitive — do not paste into
     screenshots, chat transcripts, or shared terminals."""
@@ -1019,6 +1027,7 @@ def main():
         "mcp": cmd_mcp,
         "keys": cmd_keys,
         "claude-ai": cmd_claude_ai,
+        "sync-daemon": cmd_sync_daemon,
     }
 
     handler = commands.get(cmd)

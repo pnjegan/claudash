@@ -40,16 +40,17 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 - Claude Code installed and at least one session run
 - macOS or Linux (Windows: core features work, browser tracking not supported)
 
-### Fastest (via npx — no install needed)
+### Via npm (recommended)
 
 ```bash
-npx claudash
+npm install -g @jeganwrites/claudash
+claudash
 ```
 
 Requires Node.js 16+ and Python 3.8+.
 Auto-installs, opens browser, detects your Claude Code data.
 
-### Manual install (local Mac/Linux)
+### Or git clone
 
 ```bash
 git clone https://github.com/pnjegan/claudash
@@ -88,6 +89,14 @@ python3 tools/mac-sync.py
 
 # Automate via cron:
 # */5 * * * * python3 /path/to/oauth_sync.py
+```
+
+### Auto-sync daemon (runs every 5 minutes)
+
+```bash
+python3 cli.py sync-daemon
+# Or run in background:
+nohup python3 cli.py sync-daemon > /tmp/claudash-sync.log 2>&1 &
 ```
 
 Full setup walkthrough in [SETUP.md](SETUP.md).
@@ -161,6 +170,7 @@ page to modify accounts.
 | `python3 cli.py mcp` | Print the MCP settings.json snippet + smoke-test the server |
 | `python3 cli.py keys` | Print `dashboard_key` and `sync_token` (sensitive) |
 | `python3 cli.py claude-ai` | Show claude.ai browser tracking status |
+| `python3 cli.py sync-daemon` | Auto-sync browser data every 5 min (foreground) |
 
 ## How Claudash differs from similar tools
 
@@ -236,6 +246,7 @@ Every mutating endpoint requires `X-Dashboard-Key` (from `python3 cli.py keys`).
 ## Documentation
 
 - [SETUP.md](SETUP.md) — first-time setup guide
+- [docs/HOOKS_SETUP.md](docs/HOOKS_SETUP.md) — Claude Code hooks integration
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 

@@ -739,17 +739,23 @@ def compute_efficiency_score(conn, account="all"):
     window_score = max(0, min(100, window_score))
 
     # Dimension 4: Floundering rate
+    # Count DISTINCT sessions (not events) with floundering, filtered by account
     total_sessions = conn.execute(
         f"SELECT COUNT(DISTINCT session_id) FROM sessions WHERE {where}",
         params
     ).fetchone()[0] or 1
+    flounder_where = "pattern_type='floundering' AND detected_at > ?"
+    flounder_params = [cutoff]
+    if account and account != "all":
+        flounder_where += " AND account = ?"
+        flounder_params.append(account)
     flounder_sessions = conn.execute(
-        "SELECT COUNT(DISTINCT session_id) FROM waste_events "
-        "WHERE pattern_type='floundering' AND detected_at > ?",
-        [cutoff]
+        f"SELECT COUNT(DISTINCT session_id) FROM waste_events WHERE {flounder_where}",
+        flounder_params
     ).fetchone()[0]
-    flounder_rate = flounder_sessions / total_sessions
-    flounder_score = round((1 - min(flounder_rate * 10, 1)) * 100)
+    # Linear penalty: 0% flounder = 100, 1% = 90, 5% = 50, 10%+ = 0
+    flounder_pct = flounder_sessions / total_sessions * 100
+    flounder_score = max(0, round(100 - flounder_pct * 10))
 
     # Dimension 5: Compaction discipline
     compact_events = conn.execute(

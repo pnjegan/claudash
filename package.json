@@ -1,5 +1,5 @@
 {
-  "name": "claudash",
+  "name": "@jeganwrites/claudash",
   "version": "1.0.5",
   "description": "Claude Code usage intelligence dashboard",
   "bin": {
