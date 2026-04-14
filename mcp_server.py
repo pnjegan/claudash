@@ -54,7 +54,7 @@ from analyzer import (  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "claudash"
-SERVER_VERSION = "1.0.0"
+from _version import VERSION as SERVER_VERSION
 
 
 # ─── Tool implementations ────────────────────────────────────────
