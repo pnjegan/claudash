@@ -10,6 +10,8 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 ![python](https://img.shields.io/badge/python-3.8%2B-black)
 ![deps](https://img.shields.io/badge/dependencies-zero-black)
 
+![Claudash Dashboard](docs/screenshot.png)
+
 ## What you get
 
 - **Efficiency Score** — single 0-100 score across 5 dimensions: cache, model right-sizing, window discipline, floundering rate, compaction. Honest, actionable, comparable over time.
