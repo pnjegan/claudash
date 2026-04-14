@@ -1,6 +1,6 @@
 {
   "name": "@jeganwrites/claudash",
-  "version": "1.0.5",
+  "version": "1.0.9",
   "description": "Claude Code usage intelligence dashboard",
   "bin": {
     "claudash": "./bin/claudash.js"
@@ -8,7 +8,13 @@
   "scripts": {
     "start": "node bin/claudash.js"
   },
-  "keywords": ["claude", "claude-code", "usage", "dashboard", "ai"],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "usage",
+    "dashboard",
+    "ai"
+  ],
   "author": "Jegan Nagarajan",
   "license": "MIT",
   "repository": {

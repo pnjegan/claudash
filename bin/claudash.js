@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const VERSION = '1.0.5';
+const { version: VERSION } = require('../package.json');
 const REPO = 'https://github.com/pnjegan/claudash';
 const INSTALL_DIR = path.join(os.homedir(), '.claudash');
 
