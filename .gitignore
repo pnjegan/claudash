@@ -53,3 +53,4 @@ usage_export.csv
 # ── Local agent / CDC tracking (per-machine only) ──
 .claude/
 .dev-cdc/
+.npmrc

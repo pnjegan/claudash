@@ -5,6 +5,8 @@ import sys
 import re
 import time
 import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
@@ -29,7 +31,7 @@ from db import (
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 from _version import VERSION
 from analyzer import full_analysis, project_metrics, window_intelligence, trend_metrics
-from scanner import scan_all, get_last_scan_time, preview_paths, discover_claude_paths
+from scanner import scan_all, get_last_scan_time, preview_paths, discover_claude_paths, is_scan_running
 from insights import generate_insights
 from claude_ai_tracker import (
     poll_all as poll_claude_ai, get_account_statuses, get_last_poll_time,
@@ -38,10 +40,37 @@ from claude_ai_tracker import (
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
-# Response cache for /api/data — {account: (timestamp, result)}
-_data_cache = {}
+# Response cache for /api/data — LRU-capped so unknown account params can't grow it unboundedly.
+_data_cache = OrderedDict()
+_DATA_CACHE_MAX = 64
+_data_cache_lock = threading.Lock()
 CACHE_TTL = 30  # seconds
 _server_start_time = time.time()
+
+# Dedicated executor for timeout-bounded analysis — avoids leaking one-off Thread objects per request.
+_analysis_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis")
+
+
+def _cache_get(account):
+    with _data_cache_lock:
+        entry = _data_cache.get(account)
+        if entry and (time.time() - entry[0]) < CACHE_TTL:
+            _data_cache.move_to_end(account)
+            return entry[1]
+        return None
+
+
+def _cache_put(account, value):
+    with _data_cache_lock:
+        _data_cache[account] = (time.time(), value)
+        _data_cache.move_to_end(account)
+        while len(_data_cache) > _DATA_CACHE_MAX:
+            _data_cache.popitem(last=False)
+
+
+def _cache_clear():
+    with _data_cache_lock:
+        _data_cache.clear()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -138,15 +167,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/accounts":
             conn = get_conn()
             accounts = get_all_accounts(conn)
-            # Add session stats per account
+            # Single grouped query — avoids N+1 (one SELECT per account).
+            cutoff = int(time.time() - 30 * 86400)
+            stats = {}
+            for row in conn.execute(
+                "SELECT account, COUNT(DISTINCT session_id) AS cnt, COALESCE(SUM(cost_usd),0) AS cost "
+                "FROM sessions WHERE timestamp >= ? GROUP BY account",
+                (cutoff,),
+            ).fetchall():
+                stats[row["account"]] = (row["cnt"], row["cost"])
             for a in accounts:
-                row = conn.execute(
-                    "SELECT COUNT(DISTINCT session_id) as cnt, COALESCE(SUM(cost_usd),0) as cost "
-                    "FROM sessions WHERE account = ? AND timestamp >= ?",
-                    (a["account_id"], int((__import__("time").time()) - 30 * 86400)),
-                ).fetchone()
-                a["sessions_30d"] = row["cnt"] if row else 0
-                a["cost_30d"] = round(row["cost"], 2) if row else 0
+                cnt, cost = stats.get(a["account_id"], (0, 0))
+                a["sessions_30d"] = cnt
+                a["cost_30d"] = round(cost, 2)
             conn.close()
             self._serve_json(accounts)
 
@@ -169,9 +202,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             paths = json.loads(row["data_paths"]) if row["data_paths"] else []
             info = preview_paths(paths)
+            # Strip absolute `expanded` paths — don't leak FS layout to unauth callers.
+            safe_info = [{"path": p["path"], "exists": p["exists"], "jsonl_files": p["jsonl_files"]} for p in info]
             total_est = sum(p["jsonl_files"] for p in info)
             self._serve_json({
-                "paths": info,
+                "paths": safe_info,
                 "estimated_records": total_est,
             })
 
@@ -197,6 +232,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_json(history)
 
         elif path == "/tools/mac-sync.py":
+            # Gated — only return the script to authenticated callers.
+            if not self._require_dashboard_key():
+                return
             self._serve_mac_sync()
 
         # ── Fix tracker GET endpoints ──
@@ -277,7 +315,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self._read_body()
 
         if path == "/api/scan":
-            _data_cache.clear()
+            if is_scan_running():
+                self._serve_json({"status": "scan already running"}, 409)
+                return
+            _cache_clear()
             rows = scan_all()
             conn = get_conn()
             insights_count = generate_insights(conn)
@@ -322,6 +363,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif re.match(r"^/api/accounts/([a-z][a-z0-9_]*)/scan$", path):
             m = re.match(r"^/api/accounts/([a-z][a-z0-9_]*)/scan$", path)
             account_id = m.group(1)
+            if is_scan_running():
+                self._serve_json({"status": "scan already running"}, 409)
+                return
             rows = scan_all(account_filter=account_id)
             conn = get_conn()
             insights_count = generate_insights(conn)
@@ -706,33 +750,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn.close()
 
     def _get_data(self, account):
-        # Check cache first
-        cached = _data_cache.get(account)
-        if cached and (time.time() - cached[0]) < CACHE_TTL:
-            return cached[1]
+        # Validate account param before using it as a cache key, so malicious
+        # callers can't pollute the cache with arbitrary strings.
+        if account != "all" and not re.match(r"^[a-z][a-z0-9_]{0,31}$", account):
+            return {"error": "invalid account"}
 
-        # Run analysis with 10-second timeout
-        result_holder = [None]
-        error_holder = [None]
+        cached = _cache_get(account)
+        if cached is not None:
+            return cached
 
         def run_analysis():
+            conn = get_conn()
             try:
-                conn = get_conn()
-                result_holder[0] = self._build_data(conn, account)
+                return self._build_data(conn, account)
+            finally:
                 conn.close()
-            except Exception as e:
-                error_holder[0] = str(e)
 
-        t = threading.Thread(target=run_analysis)
-        t.start()
-        t.join(timeout=10)
-        if t.is_alive():
-            return {"error": "Analysis timeout — DB may be under load"}
-        if error_holder[0]:
-            return {"error": error_holder[0]}
+        future = _analysis_executor.submit(run_analysis)
+        try:
+            data = future.result(timeout=10)
+        except FutureTimeoutError:
+            # Don't cancel — the analysis keeps running in the pool; just don't wait.
+            return {"error": "analysis timeout"}
+        except Exception as e:
+            print(f"[api] /api/data error: {e}", file=sys.stderr)
+            return {"error": "internal error"}
 
-        data = result_holder[0]
-        _data_cache[account] = (time.time(), data)
+        _cache_put(account, data)
         return data
 
     def _build_data(self, conn, account):

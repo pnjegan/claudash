@@ -216,7 +216,7 @@ def project_metrics(conn, account="all"):
             projects[p] = {
                 "name": p, "account": r["account"], "tokens": 0, "cost": 0.0,
                 "cache_read": 0, "cache_create": 0, "input_tokens": 0, "models": {}, "sessions": set(),
-                "output_tokens_list": [], "timestamps": [],
+                "output_tokens_list": [], "timestamps": [], "cache_roi": 0.0,
             }
         d = projects[p]
         d["tokens"] += r["input_tokens"] + r["output_tokens"]
@@ -228,6 +228,8 @@ def project_metrics(conn, account="all"):
         d["sessions"].add(r["session_id"])
         d["output_tokens_list"].append(r["output_tokens"])
         d["timestamps"].append(r["timestamp"])
+        pricing = MODEL_PRICING.get(r["model"], MODEL_PRICING["claude-sonnet"])
+        d["cache_roi"] += r["cache_read_tokens"] * (pricing["input"] - pricing["cache_read"]) / 1_000_000
 
     this_week_cost = defaultdict(float)
     for r in rows_7d:
@@ -257,11 +259,7 @@ def project_metrics(conn, account="all"):
         else:
             token_velocity = 0
 
-        cache_roi = 0.0
-        for r in rows_30d:
-            if r["project"] == p:
-                pricing = MODEL_PRICING.get(r["model"], MODEL_PRICING["claude-sonnet"])
-                cache_roi += r["cache_read_tokens"] * (pricing["input"] - pricing["cache_read"]) / 1_000_000
+        cache_roi = d["cache_roi"]
 
         tw = this_week_cost.get(p, 0)
         lw = last_week_cost.get(p, 0)

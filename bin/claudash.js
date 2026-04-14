@@ -131,6 +131,12 @@ function main() {
   }
   const noBrowser = args.includes('--no-browser');
 
+  // Validate port before it flows into any execSync call
+  if (!/^\d{1,5}$/.test(port) || parseInt(port, 10) < 1 || parseInt(port, 10) > 65535) {
+    console.error('Invalid port number: ' + port);
+    process.exit(1);
+  }
+
   console.log('Claudash v' + VERSION);
   console.log('-'.repeat(40));
 

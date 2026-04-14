@@ -9,10 +9,23 @@ from config import UNKNOWN_PROJECT, MODEL_PRICING
 from db import get_conn, insert_session, get_accounts_config, get_project_map_config
 
 _last_scan_time = 0
+_scan_lock = threading.Lock()  # serializes scan_all() across threads
 
 
 def get_last_scan_time():
     return _last_scan_time
+
+
+def is_scan_running():
+    """Non-blocking check — True if a scan is currently holding the lock."""
+    acquired = _scan_lock.acquire(blocking=False)
+    if acquired:
+        _scan_lock.release()
+        return False
+    return True
+
+
+BATCH_FLUSH_SIZE = 10_000
 
 
 def normalize_model(model_str):
@@ -202,8 +215,33 @@ def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=Non
     if file_size == last_offset:
         return 0
 
+    def _flush(rows):
+        """Run compaction detection + insert in one batch. Returns rows added."""
+        if not rows:
+            return 0
+        sessions = {}
+        for i, row in enumerate(rows):
+            sessions.setdefault(row["session_id"], []).append(i)
+        for sid, indices in sessions.items():
+            indices.sort(key=lambda idx: rows[idx]["timestamp"])
+            session_data = [rows[idx] for idx in indices]
+            for evt_idx, before, after in _detect_compaction(session_data):
+                real_idx = indices[evt_idx]
+                rows[real_idx]["compaction_detected"] = 1
+                rows[real_idx]["tokens_before_compact"] = before
+                rows[real_idx]["tokens_after_compact"] = after
+        added_local = 0
+        for row in rows:
+            before = conn.total_changes
+            insert_session(conn, row)
+            if conn.total_changes > before:
+                added_local += 1
+        conn.commit()
+        return added_local
+
     raw_rows = []
     new_lines = 0
+    added = 0
     try:
         with open(filepath, "r", errors="replace") as f:
             if last_offset > 0:
@@ -219,50 +257,33 @@ def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=Non
                 if parsed:
                     parsed["project"] = project
                     parsed["account"] = account
-                    # Store the actual JSONL file path, not the data_path root.
-                    # Without the full path we can't re-resolve the project from
-                    # a session row, and every session from one data_path looks
-                    # identical. scan_state tracks the same key.
                     parsed["source_path"] = filepath
                     parsed["is_subagent"] = is_subagent
                     parsed["parent_session_id"] = parent_sid
                     raw_rows.append(parsed)
+                    # Flush batch to DB to keep memory bounded on cold scans
+                    if len(raw_rows) >= BATCH_FLUSH_SIZE:
+                        added += _flush(raw_rows)
+                        raw_rows = []
             end_offset = f.tell()
     except Exception as e:
         print(f"[scanner] Error reading {filepath}: {e}", file=sys.stderr)
         return 0
 
-    # Compaction detection within this batch
-    sessions = {}
-    for i, row in enumerate(raw_rows):
-        sid = row["session_id"]
-        if sid not in sessions:
-            sessions[sid] = []
-        sessions[sid].append(i)
-
-    for sid, indices in sessions.items():
-        indices.sort(key=lambda idx: raw_rows[idx]["timestamp"])
-        session_data = [raw_rows[idx] for idx in indices]
-        compaction_events = _detect_compaction(session_data)
-        for evt_idx, before, after in compaction_events:
-            real_idx = indices[evt_idx]
-            raw_rows[real_idx]["compaction_detected"] = 1
-            raw_rows[real_idx]["tokens_before_compact"] = before
-            raw_rows[real_idx]["tokens_after_compact"] = after
-
-    added = 0
-    for row in raw_rows:
-        before = conn.total_changes
-        insert_session(conn, row)
-        if conn.total_changes > before:
-            added += 1
-
+    added += _flush(raw_rows)
     _set_scan_state(conn, filepath, end_offset, prev_lines + new_lines)
     return added
 
 
 def scan_all(account_filter=None):
-    """Walk all configured data_paths and scan JSONL files incrementally."""
+    """Walk all configured data_paths and scan JSONL files incrementally.
+    Serialized via _scan_lock — concurrent callers wait for the in-flight scan."""
+    global _last_scan_time
+    with _scan_lock:
+        return _scan_all_locked(account_filter)
+
+
+def _scan_all_locked(account_filter=None):
     global _last_scan_time
     conn = get_conn()
     accounts = get_accounts_config(conn)

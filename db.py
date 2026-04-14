@@ -104,8 +104,11 @@ def init_db():
         if not _column_exists(conn, "sessions", col):
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
 
-    # --- Additional index ---
+    # --- Additional indexes ---
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_model ON sessions(model)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_account_ts ON sessions(account, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_ts ON sessions(project, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_account_project ON sessions(account, project)")
 
     # --- Scan state for incremental scanning ---
     conn.executescript("""
@@ -462,6 +465,28 @@ def validate_account_id(account_id):
     return True, ""
 
 
+def _validate_data_paths(data_paths):
+    """Validate every entry in data_paths. Each must:
+      - exist and be a directory
+      - resolve (after realpath) within the user's home OR /root (VPS case)
+      - not be a symlink escaping the home tree
+    Returns (ok, err_msg)."""
+    if not isinstance(data_paths, list):
+        return False, "data_paths must be a list"
+    home = os.path.realpath(os.path.expanduser("~"))
+    allowed_roots = [home, "/root"]
+    for p in data_paths:
+        if not isinstance(p, str) or not p.strip():
+            return False, "each data_path must be a non-empty string"
+        expanded = os.path.expanduser(p)
+        if not os.path.isdir(expanded):
+            return False, f"data_path does not exist or is not a directory: {p}"
+        real = os.path.realpath(expanded)
+        if not any(real == root or real.startswith(root + os.sep) for root in allowed_roots):
+            return False, f"data_path escapes allowed roots (home/root): {p}"
+    return True, ""
+
+
 def create_account(conn, data):
     """Create a new account. Returns (success, error_msg)."""
     account_id = data.get("account_id", "")
@@ -477,6 +502,9 @@ def create_account(conn, data):
     data_paths = data.get("data_paths", [])
     if not data_paths:
         return False, "at least one data_path is required"
+    valid, err = _validate_data_paths(data_paths)
+    if not valid:
+        return False, err
 
     label = data.get("label", "")
     if not label:
@@ -508,6 +536,9 @@ def update_account(conn, account_id, data):
             updates.append(f"{field} = ?")
             params.append(data[field])
     if "data_paths" in data:
+        valid, err = _validate_data_paths(data["data_paths"])
+        if not valid:
+            return False, err
         updates.append("data_paths = ?")
         params.append(json.dumps(data["data_paths"]))
 

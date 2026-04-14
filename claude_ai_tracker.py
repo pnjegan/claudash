@@ -18,14 +18,22 @@ from db import (
 
 _last_poll_time = 0
 _account_statuses = {}
+_state_lock = threading.Lock()
+
+
+def _set_status(account_id, status):
+    with _state_lock:
+        _account_statuses[account_id] = status
 
 
 def get_last_poll_time():
-    return _last_poll_time
+    with _state_lock:
+        return _last_poll_time
 
 
 def get_account_statuses():
-    return dict(_account_statuses)
+    with _state_lock:
+        return dict(_account_statuses)
 
 
 def _ssl_ctx():
@@ -214,7 +222,7 @@ def poll_single(account_id, conn=None):
         return None
 
     if not sk or not oid:
-        _account_statuses[account_id] = {"status": "unconfigured", "label": label}
+        _set_status(account_id, {"status": "unconfigured", "label": label})
         if should_close:
             conn.close()
         return None
@@ -222,7 +230,7 @@ def poll_single(account_id, conn=None):
     result = fetch_usage(sk, oid, plan)
     if not result:
         update_claude_ai_account_status(conn, account_id, "error", "No response")
-        _account_statuses[account_id] = {"status": "error", "label": label, "error": "No response"}
+        _set_status(account_id, {"status": "error", "label": label, "error": "No response"})
         if should_close:
             conn.close()
         return None
@@ -231,10 +239,10 @@ def poll_single(account_id, conn=None):
         err = result["error"]
         if err == "expired":
             update_claude_ai_account_status(conn, account_id, "expired", "Session expired")
-            _account_statuses[account_id] = {"status": "expired", "label": label}
+            _set_status(account_id, {"status": "expired", "label": label})
         else:
             update_claude_ai_account_status(conn, account_id, "error", err)
-            _account_statuses[account_id] = {"status": "error", "label": label, "error": err}
+            _set_status(account_id, {"status": "error", "label": label, "error": err})
         if should_close:
             conn.close()
         return None
@@ -243,7 +251,7 @@ def poll_single(account_id, conn=None):
     insert_claude_ai_snapshot(conn, account_id, result)
     update_claude_ai_account_status(conn, account_id, "active", None)
 
-    _account_statuses[account_id] = {
+    _set_status(account_id, {
         "status": "active",
         "label": label,
         "pct_used": result["pct_used"],
@@ -252,7 +260,7 @@ def poll_single(account_id, conn=None):
         "messages_used": result["messages_used"],
         "messages_limit": result["messages_limit"],
         "plan": plan,
-    }
+    })
 
     if plan == "pro" and result["messages_limit"] > 0:
         print(f"[claude.ai] {label}: {result['messages_used']}/{result['messages_limit']} messages used", file=sys.stderr)
@@ -283,7 +291,7 @@ def poll_all():
             continue
 
         if not sk or not oid:
-            _account_statuses[aid] = {"status": "unconfigured", "label": label}
+            _set_status(aid, {"status": "unconfigured", "label": label})
             continue
 
         try:
@@ -292,10 +300,11 @@ def poll_all():
                 count += 1
         except Exception as e:
             print(f"[claude.ai] Error polling {aid}: {e}", file=sys.stderr)
-            _account_statuses[aid] = {"status": "error", "label": label, "error": str(e)}
+            _set_status(aid, {"status": "error", "label": label, "error": str(e)})
 
     conn.close()
-    _last_poll_time = int(time.time())
+    with _state_lock:
+        _last_poll_time = int(time.time())
     print(f"[claude.ai] Poll complete: {count}/{len(accounts)} accounts updated", file=sys.stderr)
     return count
 
