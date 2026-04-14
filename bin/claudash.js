@@ -5,9 +5,32 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.5';
 const REPO = 'https://github.com/pnjegan/claudash';
 const INSTALL_DIR = path.join(os.homedir(), '.claudash');
+
+// Parse args FIRST — before any other code runs.
+// This prevents macOS `open` from ever receiving --help and misinterpreting it.
+const args = process.argv.slice(2);
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log('Claudash v' + VERSION + ' — Claude Code usage intelligence');
+  console.log('');
+  console.log('Usage: claudash [--port <n>]');
+  console.log('');
+  console.log('  --port <n>    Port to serve on (default: 8080)');
+  console.log('  --no-browser  Skip auto-opening browser');
+  console.log('  --help, -h    Show this help');
+  console.log('');
+  console.log('GitHub: https://github.com/pnjegan/claudash');
+  console.log('npm:    npm install -g @jeganwrites/claudash');
+  process.exit(0);
+}
+
+if (args.includes('--version') || args.includes('-v')) {
+  console.log(VERSION);
+  process.exit(0);
+}
 
 function checkPython() {
   try {
@@ -41,6 +64,19 @@ function checkClaudeData() {
     console.log('Found Claude Code data at: ' + found[0]);
   }
   return found;
+}
+
+function isPortInUse(port) {
+  try {
+    execSync(
+      'lsof -ti:' + port + ' 2>/dev/null || ' +
+      'netstat -an 2>/dev/null | grep ":' + port + ' " | grep LISTEN',
+      { stdio: 'pipe' }
+    );
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function installClaudash() {
@@ -78,22 +114,17 @@ function openBrowser(port) {
 }
 
 function main() {
-  const args = process.argv.slice(2);
-
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Claudash v' + VERSION + ' — Claude Code usage intelligence');
-    console.log('');
-    console.log('Usage: npx claudash [options]');
-    console.log('');
-    console.log('Options:');
-    console.log('  --port=N    Dashboard port (default: 8080)');
-    console.log('  --no-browser  Skip auto-opening browser');
-    console.log('  --help      Show this help');
-    process.exit(0);
+  // Support both --port=N and --port N
+  let port = '8080';
+  const portEq = args.find(a => a.startsWith('--port='));
+  if (portEq) {
+    port = portEq.split('=')[1];
+  } else {
+    const portIdx = args.indexOf('--port');
+    if (portIdx !== -1 && args[portIdx + 1]) {
+      port = args[portIdx + 1];
+    }
   }
-
-  const portArg = args.find(a => a.startsWith('--port='));
-  const port = portArg ? portArg.split('=')[1] : '8080';
   const noBrowser = args.includes('--no-browser');
 
   console.log('Claudash v' + VERSION);
@@ -102,6 +133,13 @@ function main() {
   checkPython();
   checkClaudeData();
   installClaudash();
+
+  if (isPortInUse(port)) {
+    console.log('Port ' + port + ' is already in use.');
+    console.log('Try: claudash --port 8081');
+    console.log('Or kill the process: lsof -ti:' + port + ' | xargs kill');
+    process.exit(1);
+  }
 
   console.log('Starting dashboard on http://localhost:' + port + ' ...');
   if (!noBrowser) {
