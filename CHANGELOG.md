@@ -1,5 +1,96 @@
 # Claudash — Changelog
 
+## [2026-04-14] Session 9 — Reliability, npm package live, version 1.0.11 published
+
+### Fixed
+- **Tab switch JS null error** — `$('projects').innerHTML` referenced a nonexistent element ID. Changed to `$('proj-body')` with proper `<tr><td>` wrapper. Added `id="projects-section"` and `id="fix-tracker-section"`.
+  Files: templates/dashboard.html
+
+- **Hardcoded version strings** — `server.py /health` returned `"1.0.0"`, `cli.py HELP_TEXT` said `Claudash v1.0`, `mcp_server.py` had `SERVER_VERSION = "1.0.0"` — all while `package.json` moved through 1.0.9, 1.0.10, 1.0.11. Created shared `_version.py` that reads from `package.json`. All four call sites now dynamic.
+  Files: _version.py, server.py, cli.py, mcp_server.py
+
+- **SETUP.md placeholder** — `git clone <your-fork-or-repo>` replaced with `git clone https://github.com/pnjegan/claudash`.
+  Files: SETUP.md
+
+- **npm binary --help flag** — `--help` / `-h` / `--version` / `-v` now handled at module top before `main()` runs. Prevents macOS `open` from ever receiving these flags. Added `isPortInUse()` check with lsof + netstat fallback.
+  Files: bin/claudash.js, package.json
+
+- **Duplicate insights in DB** — cleaned 1 duplicate `heavy_day` insight, fixed 2 stale "Work (Max)" labels → "Personal (Max)".
+  Files: data/usage.db (runtime state)
+
+- **Efficiency score floundering formula** — added per-account filter on `waste_events` query (was counting across all accounts). Clarified penalty formula.
+  Files: analyzer.py
+
+### Added
+- **Auto-restart loop** — `cmd_dashboard()` wraps `_run_dashboard()` in a try/except loop with exponential backoff (5 restarts max, 5s→60s).
+  Files: cli.py
+
+- **`/health` endpoint** — no-auth GET returning `{status, version, uptime_seconds, records, last_scan}`. Always 200 if server running.
+  Files: server.py
+
+- **Helpful 404 HTML page** — replaces blank error with styled page that auto-redirects to `/` after 5 seconds.
+  Files: server.py
+
+- **PM2 process manager setup** — `tools/setup-pm2.sh` one-command script + `ecosystem.config.js`. Survives VPS reboots.
+  Files: tools/setup-pm2.sh, ecosystem.config.js
+
+- **Connection-lost banner + reconnect toast** — dashboard pings `/health` every 30s. After 2 misses shows red banner; on recovery shows green "Reconnected" toast and refreshes.
+  Files: templates/dashboard.html
+
+- **Sync daemon** — `tools/sync-daemon.py` runs every 5 minutes, auto-detects platform. New `cli.py sync-daemon` command.
+  Files: tools/sync-daemon.py, cli.py
+
+- **Claude Code hooks integration** — `tools/hooks/post-session.sh` triggers a scan after every tool use. `docs/HOOKS_SETUP.md` has the settings.json snippet.
+  Files: tools/hooks/post-session.sh, docs/HOOKS_SETUP.md
+
+- **README Fix Tracker section** — documents the baseline → apply → measure → verdict loop. This killer feature was previously undocumented.
+  Files: README.md
+
+- **README process management section** — nohup, PM2, health check, log viewing.
+  Files: README.md
+
+- **README screenshot reference** — `![Claudash Dashboard](docs/screenshot.png)` after badges. Actual PNG pending.
+  Files: README.md
+
+- **npm package published** — `@jeganwrites/claudash@1.0.11` live on npm registry (https://www.npmjs.com/package/@jeganwrites/claudash). Two version bumps this session: 1.0.9 → 1.0.10 → 1.0.11.
+  Files: package.json, bin/claudash.js
+
+- **Cloudflare quick tunnel verified** — `cloudflared tunnel --url http://localhost:8080` exposes dashboard publicly without SSH.
+
+### Removed
+- **`usage_export.csv`** — 18,789 rows of session data that should never have been in a public repo. Deleted and added to `.gitignore`.
+  Files: usage_export.csv (deleted), .gitignore
+
+- **Broken doc links from README** — `REPORT.md`, `FOUNDING_DOC.md`, `SECURITY_TRUTH_MAP.md`, `END_USER_REVIEW.md` references. All four files are gitignored but linked in README.
+  Files: README.md
+
+- **`release-notes-cofounder.md` renamed** — to `release-notes-v1.0.md`, cleaned internal language.
+  Files: docs/releases/2026-04-11/
+
+### Architecture Decisions
+- **Shared `_version.py` module** — single source of truth reading from `package.json`. Python (`server.py`, `cli.py`, `mcp_server.py`) and Node (`bin/claudash.js`) all read the same file.
+  Why: Four hardcoded version strings had already drifted (package.json 1.0.9 vs everything else claiming 1.0.0).
+  Impact: Release cadence is `npm version patch` → `git push --tags` → `npm publish`. Nothing else to edit.
+
+- **Python-level auto-restart + PM2 as layered defense** — Python handles transient exceptions fast; PM2 handles OS crashes and reboots.
+  Impact: `nohup` is no longer the recommended path. Docs lead with PM2.
+
+- **npm scope `@jeganwrites/`** — scoped publish with `--access public` avoids the squatted unscoped `claudash` package.
+  Impact: Install command is longer but unambiguous.
+
+### Known Issues / Not Done
+- **`docs/screenshot.png` doesn't exist yet** — README references it, will render as broken image on GitHub until a real screenshot is dropped in.
+  Why deferred: requires running dashboard on Mac with real data.
+
+- **Efficiency score reads 42/F on current DB** — honest output given 84% floundering rate, but new users may assume the tool is broken. No UI explainer.
+  Why deferred: needs copy tuning + tooltip, not a quick fix.
+
+- **CHANGELOG is 43KB** — still one monolithic file.
+  Why deferred: not blocking launch.
+
+- **Three internal docs (FOUNDING_DOC.md, END_USER_REVIEW.md, REPORT.md) remain on disk** (gitignored).
+  Why deferred: not worth risk of accidentally deleting user's working tree state.
+
 ## [2026-04-13] Session 7 — Prompt A: 30 pre-launch gaps fixed across security, performance, platform, data, UI, and GitHub readiness
 
 ### Fixed
