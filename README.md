@@ -35,6 +35,24 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 | EC2/VPS | Full | Headless | Use SSH tunnel to view |
 | claude.ai browser only | Partial | Window tracking only | No project intelligence |
 
+## Running Claudash across multiple machines
+
+If you use Claude Code on multiple machines (Mac + VPS, work + personal),
+run ONE Claudash instance and point it at all your data.
+
+Recommended: run Claudash on your primary machine or VPS.
+To include Claude Code sessions from other machines, sync their JSONL files:
+
+```cron
+# On secondary machine (Mac/Windows), add to crontab:
+*/5 * * * * rsync -az ~/.claude/projects/ user@your-server:~/.claude/projects-secondary/
+```
+
+Then add the synced path as a second account in the Accounts tab.
+
+Do **NOT** run separate Claudash instances per machine — you will get split
+dashboards with no unified view.
+
 ## Getting Started
 
 ### Requirements

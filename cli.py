@@ -171,69 +171,134 @@ def _run_dashboard(port=8080, no_browser=False, skip_init=False):
     start_server(port=port)
 
 
+PLAN_DEFAULTS = {
+    "max": ("max", 100.0, 1_000_000),
+    "pro": ("pro", 20.0, 0),
+    "api": ("api", 0.0, 0),
+    "team": ("api", 0.0, 0),
+    "free": ("pro", 0.0, 0),
+}
+
+
+def _detect_from_credentials():
+    """Read ~/.claude/.credentials.json and return (plan, email) or (None, None).
+    Only inspects subscriptionType + the JWT sub/email claims — never logs the
+    access token or prints raw fields."""
+    import base64
+    path = os.path.expanduser("~/.claude/.credentials.json")
+    if not os.path.exists(path):
+        return None, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    oauth = data.get("claudeAiOauth") or {}
+    sub = (oauth.get("subscriptionType") or "").lower() or None
+
+    # Best-effort email extraction from the JWT access token (middle segment).
+    email = None
+    token = oauth.get("accessToken") or ""
+    if token.count(".") == 2:
+        try:
+            payload_b64 = token.split(".")[1]
+            payload_b64 += "=" * (-len(payload_b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+            email = payload.get("email") or payload.get("sub") or None
+            if email and "@" not in str(email):
+                email = None
+        except Exception:
+            email = None
+    return sub, email
+
+
 def cmd_init():
-    """Interactive first-run setup wizard."""
+    """Interactive first-run setup wizard. Skips questions that can be
+    auto-detected from ~/.claude/.credentials.json."""
     init_db()
     conn = get_conn()
 
     print(flush=True)
-    print("  Claudash Setup Wizard", flush=True)
+    print("  Claudash Setup", flush=True)
     print("  " + "-" * 40, flush=True)
-    print("  Answer 3 questions to configure your dashboard.", flush=True)
-    print(flush=True)
 
-    # Question 1: Plan type
-    print("  1. What Claude plan are you on?", flush=True)
-    print("     [1] Max  ($100/mo — 1M tokens/5hr window)", flush=True)
-    print("     [2] Pro  ($20/mo  — message-based limits)", flush=True)
-    print("     [3] API  (pay per token)", flush=True)
-    print("     [4] Team (API with org billing)", flush=True)
-    try:
-        choice = input("     Enter 1-4: ").strip()
-    except EOFError:
-        choice = "1"
-    plan_map = {
-        "1": ("max", 100.0, 1_000_000),
-        "2": ("pro", 20.0, 0),
-        "3": ("api", 0.0, 0),
-        "4": ("api", 0.0, 0),
-    }
-    plan, cost, tokens = plan_map.get(choice, ("max", 100.0, 1_000_000))
-
-    # Question 1b: Monthly cost (if API)
-    if plan == "api":
+    detected_plan, detected_email = _detect_from_credentials()
+    plan = cost = tokens = None
+    name = None
+    if detected_plan and detected_plan in PLAN_DEFAULTS:
+        plan, cost, tokens = PLAN_DEFAULTS[detected_plan]
+        who = detected_email or "your Claude account"
+        print(f"  Detected: {who} ({detected_plan.title()} plan)", flush=True)
         try:
-            cost_input = input("     Monthly API spend (approx $): ").strip()
-            cost = float(cost_input)
-        except (ValueError, EOFError):
-            cost = 0.0
+            resp = input("  Is this correct? [Y/n]: ").strip().lower()
+        except EOFError:
+            resp = ""
+        if resp and resp not in ("y", "yes", ""):
+            plan = cost = tokens = None  # fall back to wizard
+        else:
+            # Auto-name from email local-part, else "Personal"
+            if detected_email and "@" in detected_email:
+                name = detected_email.split("@")[0].title()
+            else:
+                name = "Personal"
 
-    # Question 2: Show detected projects
-    print(flush=True)
-    print("  2. Detected Claude Code projects:", flush=True)
-    projects = conn.execute(
-        "SELECT project, COUNT(*) as sessions "
-        "FROM sessions GROUP BY project "
-        "ORDER BY sessions DESC LIMIT 10"
-    ).fetchall()
+    if plan is None:
+        print("  Answer 3 questions to configure your dashboard.", flush=True)
+        print(flush=True)
 
-    if projects:
-        for i, p in enumerate(projects, 1):
-            print(f"     {i}. {p['project']} ({p['sessions']} sessions)", flush=True)
-        print("     These were auto-detected from your JSONL files.", flush=True)
-        print("     Add custom project names in config.py PROJECT_MAP", flush=True)
-    else:
-        print("     No sessions found yet.", flush=True)
-        print("     Run 'python3 cli.py scan' after using Claude Code.", flush=True)
+        # Question 1: Plan type
+        print("  1. What Claude plan are you on?", flush=True)
+        print("     [1] Max  ($100/mo — 1M tokens/5hr window)", flush=True)
+        print("     [2] Pro  ($20/mo  — message-based limits)", flush=True)
+        print("     [3] API  (pay per token)", flush=True)
+        print("     [4] Team (API with org billing)", flush=True)
+        try:
+            choice = input("     Enter 1-4: ").strip()
+        except EOFError:
+            choice = "1"
+        plan_map = {
+            "1": PLAN_DEFAULTS["max"],
+            "2": PLAN_DEFAULTS["pro"],
+            "3": PLAN_DEFAULTS["api"],
+            "4": PLAN_DEFAULTS["api"],
+        }
+        plan, cost, tokens = plan_map.get(choice, PLAN_DEFAULTS["max"])
 
-    # Question 3: Account name
-    print(flush=True)
-    print("  3. What should we call this account?", flush=True)
-    print("     (e.g. 'Personal', 'Work', 'My Mac')", flush=True)
-    try:
-        name = input("     Account name: ").strip() or "Personal"
-    except EOFError:
-        name = "Personal"
+        # Question 1b: Monthly cost (if API)
+        if plan == "api":
+            try:
+                cost_input = input("     Monthly API spend (approx $): ").strip()
+                cost = float(cost_input)
+            except (ValueError, EOFError):
+                cost = 0.0
+
+    if name is None:
+        # Question 2: Show detected projects
+        print(flush=True)
+        print("  2. Detected Claude Code projects:", flush=True)
+        projects = conn.execute(
+            "SELECT project, COUNT(*) as sessions "
+            "FROM sessions GROUP BY project "
+            "ORDER BY sessions DESC LIMIT 10"
+        ).fetchall()
+
+        if projects:
+            for i, p in enumerate(projects, 1):
+                print(f"     {i}. {p['project']} ({p['sessions']} sessions)", flush=True)
+            print("     These were auto-detected from your JSONL files.", flush=True)
+            print("     Add custom project names in config.py PROJECT_MAP", flush=True)
+        else:
+            print("     No sessions found yet.", flush=True)
+            print("     Run 'python3 cli.py scan' after using Claude Code.", flush=True)
+
+        # Question 3: Account name
+        print(flush=True)
+        print("  3. What should we call this account?", flush=True)
+        print("     (e.g. 'Personal', 'Work', 'My Mac')", flush=True)
+        try:
+            name = input("     Account name: ").strip() or "Personal"
+        except EOFError:
+            name = "Personal"
 
     # Save to DB
     acct_row = conn.execute("SELECT account_id FROM accounts LIMIT 1").fetchone()
