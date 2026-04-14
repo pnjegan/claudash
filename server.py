@@ -781,6 +781,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _build_data(self, conn, account):
         data = full_analysis(conn, account)
+        data["version"] = VERSION
         data["last_scan"] = get_last_scan_time()
         data["total_rows"] = get_session_count(conn)
         if data["total_rows"] == 0:
@@ -814,7 +815,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return data
 
     def log_message(self, format, *args):
-        print(f"[server] {args[0]}", file=sys.stderr)
+        # args = (request_line, status_code, size). Suppress routine GETs;
+        # keep mutations and any 4xx/5xx for operator visibility.
+        request_line = args[0] if args else ""
+        method = request_line.split()[0] if request_line else ""
+        code = str(args[1]) if len(args) > 1 else ""
+        if method in ("POST", "PUT", "DELETE") or code.startswith(("4", "5")):
+            print(f"[server] {request_line} {code}", file=sys.stderr)
+        # else: suppress routine GETs
 
 
 def start_server(port=8080):

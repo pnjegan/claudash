@@ -1410,7 +1410,7 @@ function authHeaders() {
     const dbSize = data.db_size_mb || 0;
     const lastScan = data.last_scan ? new Date(data.last_scan * 1000).toISOString().slice(11,16) : '—';
     $('footer').textContent =
-      'Claudash v1.0 · ' + fmtNum(rows) + ' records · ' + dbSize + 'MB · last scan ' + lastScan + ' UTC';
+      'Claudash v' + (data.version || '?') + ' · ' + fmtNum(rows) + ' records · ' + dbSize + 'MB · last scan ' + lastScan + ' UTC';
     $('scan-info').textContent = 'last scan ' + timeAgo(data.last_scan);
   }
 
