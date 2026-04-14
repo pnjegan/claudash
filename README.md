@@ -216,6 +216,25 @@ insights.
 | `floundering_detected` | red | Session stuck in retry loops (same tool >=4 times) |
 | `budget_warning` / `budget_exceeded` | amber / red | Daily budget threshold crossed |
 
+## Fix Tracker
+
+Claudash tracks whether the fixes you make to your workflow actually work.
+
+1. **Baseline** — Claudash detects a waste pattern (e.g. floundering in Tidify costs $3,502/month)
+2. **Apply** — You make a change (add max-retry rule to CLAUDE.md, set autoCompactThreshold)
+3. **Measure** — Run `python3 cli.py measure <fix-id>` after 7 days
+4. **Verdict** — Claudash shows before/after: sessions, cost, floundering rate, cache hit
+
+```bash
+# Add a fix
+python3 cli.py fix add "Added max-retry:3 to CLAUDE.md for Tidify"
+
+# Measure it after a week
+python3 cli.py measure <fix-id>
+```
+
+No other Claude Code tracker closes this loop. Most tools tell you what happened. Fix Tracker tells you whether your fix worked.
+
 ## API endpoints
 
 | Method | Path | Auth | Description |

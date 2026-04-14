@@ -26,6 +26,7 @@ from db import (
 )
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+from _version import VERSION
 from analyzer import full_analysis, project_metrics, window_intelligence, trend_metrics
 from scanner import scan_all, get_last_scan_time, preview_paths, discover_claude_paths
 from insights import generate_insights
@@ -246,7 +247,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             last_scan_iso = datetime.fromtimestamp(last_scan, tz=timezone.utc).isoformat() if last_scan else None
             self._serve_json({
                 "status": "ok",
-                "version": "1.0.0",
+                "version": VERSION,
                 "uptime_seconds": int(time.time() - _server_start_time),
                 "records": total,
                 "last_scan": last_scan_iso,

@@ -15,7 +15,7 @@ accounts. Zero pip dependencies, single SQLite file, single HTML page.
 ## Quick start (5 minutes)
 
 ```bash
-git clone <your-fork-or-repo>
+git clone https://github.com/pnjegan/claudash
 cd claudash
 python3 cli.py dashboard
 # Opens at http://localhost:8080

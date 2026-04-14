@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from _version import VERSION
 from config import VPS_IP, VPS_PORT
 from db import (
     init_db, get_conn, get_insights, get_session_count, get_db_size_mb,
@@ -18,8 +19,8 @@ from db import (
 )
 
 
-HELP_TEXT = """
-Claudash v1.0 — personal Claude usage dashboard
+HELP_TEXT = f"""
+Claudash v{VERSION} — personal Claude usage dashboard
 
 Commands:
   dashboard     Start dashboard server on :8080 (127.0.0.1 only)
@@ -129,7 +130,7 @@ def _run_dashboard(port=8080, no_browser=False, skip_init=False):
 
     print(flush=True)
     print("  ╔══════════════════════════════╗", flush=True)
-    print("  ║  Claudash v1.0               ║", flush=True)
+    print(f"  ║  Claudash v{VERSION:<17s}║", flush=True)
     print("  ╠══════════════════════════════╣", flush=True)
     print(f"  ║  Records  : {total:<17,}║", flush=True)
     print(f"  ║  Accounts : {n_accts:<17s}║", flush=True)
