@@ -641,6 +641,140 @@ def subagent_metrics(conn, account="all"):
     return result
 
 
+# ── Context rot (v2-F2) ──
+
+_CONTEXT_ROT_BUCKET_SIZE = 10
+_CONTEXT_ROT_MIN_SESSIONS = 5
+_CONTEXT_ROT_MIN_BUCKETS = 3
+_CONTEXT_ROT_INFLECTION_DROP = 0.15  # first bucket >=15% below bucket 0
+
+
+def compute_context_rot(conn, project, days=30):
+    """Output/input ratio vs turn depth for one project. Turns are bucketed
+    in groups of 10 (0-9, 10-19, ...). Inflection = first bucket whose avg
+    ratio is >=15% below bucket 0. Returns a self-contained dict; never
+    raises on missing/empty data."""
+    fallback = {
+        "project": project,
+        "buckets": [],
+        "inflection_bucket": None,
+        "inflection_label": None,
+        "recommendation": "",
+        "data_sufficient": False,
+    }
+    if not project or not isinstance(project, str):
+        fallback["recommendation"] = "project name required"
+        return fallback
+
+    since = _now() - (days * 86400)
+    rows = conn.execute(
+        "SELECT session_id, input_tokens, output_tokens "
+        "FROM sessions WHERE project = ? AND timestamp >= ? "
+        "ORDER BY session_id, timestamp",
+        (project, since),
+    ).fetchall()
+
+    if not rows:
+        fallback["recommendation"] = (
+            f"{project}: no sessions in last {days}d"
+        )
+        return fallback
+
+    # Group by session; compute turn_index per session (0-based, timestamp-ordered)
+    sessions = defaultdict(list)
+    for r in rows:
+        sessions[r["session_id"]].append((r["input_tokens"] or 0, r["output_tokens"] or 0))
+
+    bucket_ratios = defaultdict(list)
+    bucket_sids = defaultdict(set)
+    for sid, turns in sessions.items():
+        for idx, (inp, out) in enumerate(turns):
+            if inp <= 0:
+                continue
+            ratio = out / inp
+            b = idx // _CONTEXT_ROT_BUCKET_SIZE
+            bucket_ratios[b].append(ratio)
+            bucket_sids[b].add(sid)
+
+    if not bucket_ratios:
+        fallback["recommendation"] = (
+            f"{project}: no turns with input_tokens > 0 "
+            "(all fully-cached — ratio undefined)"
+        )
+        return fallback
+
+    buckets = []
+    for b in sorted(bucket_ratios.keys()):
+        ratios = bucket_ratios[b]
+        lo = b * _CONTEXT_ROT_BUCKET_SIZE
+        hi = lo + _CONTEXT_ROT_BUCKET_SIZE - 1
+        buckets.append({
+            "bucket": b,
+            "label": f"{lo}-{hi}",
+            "avg_ratio": round(sum(ratios) / len(ratios), 4),
+            "session_count": len(bucket_sids[b]),
+        })
+
+    total_sessions = len(sessions)
+    data_sufficient = (
+        total_sessions >= _CONTEXT_ROT_MIN_SESSIONS
+        and len(buckets) >= _CONTEXT_ROT_MIN_BUCKETS
+    )
+
+    # Inflection detection
+    inflection_bucket = None
+    inflection_label = None
+    if buckets:
+        base = buckets[0]["avg_ratio"]
+        if base > 0:
+            threshold = base * (1 - _CONTEXT_ROT_INFLECTION_DROP)
+            for b in buckets[1:]:
+                if b["avg_ratio"] < threshold:
+                    inflection_bucket = b["bucket"]
+                    inflection_label = b["label"]
+                    break
+
+    if not data_sufficient:
+        recommendation = (
+            f"{project}: not enough data ({total_sessions} session"
+            f"{'s' if total_sessions != 1 else ''}, {len(buckets)} bucket"
+            f"{'s' if len(buckets) != 1 else ''}) — need "
+            f"{_CONTEXT_ROT_MIN_SESSIONS}+ sessions and {_CONTEXT_ROT_MIN_BUCKETS}+ buckets"
+        )
+    elif inflection_bucket is not None:
+        compact_turn = max(inflection_bucket * _CONTEXT_ROT_BUCKET_SIZE - 5, 10)
+        recommendation = (
+            f"{project} sessions show context rot after ~turn "
+            f"{inflection_bucket * _CONTEXT_ROT_BUCKET_SIZE}. "
+            f"Consider /compact at turn {compact_turn}."
+        )
+    else:
+        recommendation = (
+            f"{project}: stable output ratio across {len(buckets)} "
+            f"buckets — no rot detected"
+        )
+
+    return {
+        "project": project,
+        "buckets": buckets,
+        "inflection_bucket": inflection_bucket,
+        "inflection_label": inflection_label,
+        "recommendation": recommendation,
+        "data_sufficient": data_sufficient,
+    }
+
+
+def context_rot_by_project(conn, days=30):
+    """Run compute_context_rot for every project in the window. Returns a
+    dict keyed by project name."""
+    since = _now() - (days * 86400)
+    projs = [r[0] for r in conn.execute(
+        "SELECT DISTINCT project FROM sessions WHERE timestamp >= ? AND project IS NOT NULL",
+        (since,),
+    ).fetchall() if r[0]]
+    return {p: compute_context_rot(conn, p, days=days) for p in projs}
+
+
 # ── Lifecycle events summary (v2-F1) ──
 
 def lifecycle_by_project(conn, days=30):
@@ -949,6 +1083,12 @@ def full_analysis(conn, account="all"):
     except Exception:
         lifecycle = {}
 
+    # v2-F2: context rot trajectory per project
+    try:
+        context_rot = context_rot_by_project(conn, days=30)
+    except Exception:
+        context_rot = {}
+
     # Efficiency score
     try:
         efficiency = compute_efficiency_score(conn, account)
@@ -971,6 +1111,7 @@ def full_analysis(conn, account="all"):
         "daily_budget": budget_metrics,
         "waste_summary": waste_summary,
         "lifecycle": lifecycle,
+        "context_rot": context_rot,
         "efficiency": efficiency,
         "generated_at": _now(),
     }

@@ -322,6 +322,40 @@ def generate_insights(conn=None):
     except Exception:
         pass
 
+    # ── 13b. BAD_COMPACT_DETECTED (v2-F3) ──
+    try:
+        bad_rows = conn.execute(
+            "SELECT project, account, COUNT(*) AS n "
+            "FROM waste_events WHERE pattern_type='bad_compact' "
+            "  AND detected_at >= ? "
+            "GROUP BY project, account",
+            (_days_ago(7),),
+        ).fetchall()
+        # Deferred import of compact-instruction templates
+        try:
+            from config import COMPACT_INSTRUCTIONS as _COMPACT_INST
+        except Exception:
+            _COMPACT_INST = {}
+        for r in bad_rows:
+            proj = r["project"] or "Other"
+            if _insight_exists_recent(conn, "bad_compact_detected", proj, hours=24):
+                continue
+            n = r["n"] or 0
+            instr = _COMPACT_INST.get(proj) or _COMPACT_INST.get(
+                "default",
+                "/compact Focus on: [current task] [key decisions made] [files in scope]",
+            )
+            msg = (
+                f"{proj} has {n} bad compact{'s' if n != 1 else ''} — "
+                f"summaries dropped context. Use: {instr}"
+            )
+            detail = json.dumps({"count": n, "compact_instruction": instr})
+            insert_insight(conn, r["account"] or "all", proj,
+                           "bad_compact_detected", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
     # ── 14. DAILY_BUDGET alerts (exceeded + warning) ──
     try:
         from analyzer import daily_budget_metrics as _daily_budget_metrics

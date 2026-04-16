@@ -30,7 +30,10 @@ from db import (
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 from _version import VERSION
-from analyzer import full_analysis, project_metrics, window_intelligence, trend_metrics, lifecycle_summary
+from analyzer import (
+    full_analysis, project_metrics, window_intelligence, trend_metrics,
+    lifecycle_summary, compute_context_rot, context_rot_by_project,
+)
 from scanner import scan_all, get_last_scan_time, preview_paths, discover_claude_paths, is_scan_running
 from insights import generate_insights
 from claude_ai_tracker import (
@@ -291,6 +294,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn = get_conn()
             try:
                 data = lifecycle_summary(conn, project, days)
+            finally:
+                conn.close()
+            self._serve_json(data)
+
+        elif path == "/api/bad-compacts":
+            project = params.get("project", [None])[0]
+            days_raw = params.get("days", ["30"])[0]
+            try:
+                days = max(1, min(int(days_raw), 365))
+            except ValueError:
+                days = 30
+            if project and not re.match(r"^[A-Za-z0-9_\- ]{1,64}$", project):
+                self._serve_json({"error": "invalid project"}, 400)
+                return
+            from waste_patterns import detect_bad_compacts
+            try:
+                from config import COMPACT_INSTRUCTIONS
+            except Exception:
+                COMPACT_INSTRUCTIONS = {}
+            conn = get_conn()
+            try:
+                bad = detect_bad_compacts(conn, project, days)
+            finally:
+                conn.close()
+            instr = COMPACT_INSTRUCTIONS.get(project or "") or COMPACT_INSTRUCTIONS.get(
+                "default",
+                "/compact Focus on: [current task] [key decisions made] [files in scope]",
+            )
+            self._serve_json({
+                "project": project or "all",
+                "days": days,
+                "count": len(bad),
+                "bad_compacts": bad,
+                "compact_instruction": instr,
+            })
+
+        elif path == "/api/context-rot":
+            project = params.get("project", [None])[0]
+            days_raw = params.get("days", ["30"])[0]
+            try:
+                days = max(1, min(int(days_raw), 365))
+            except ValueError:
+                days = 30
+            if project and not re.match(r"^[A-Za-z0-9_\- ]{1,64}$", project):
+                self._serve_json({"error": "invalid project"}, 400)
+                return
+            conn = get_conn()
+            try:
+                if project:
+                    data = compute_context_rot(conn, project, days)
+                else:
+                    data = context_rot_by_project(conn, days)
             finally:
                 conn.close()
             self._serve_json(data)

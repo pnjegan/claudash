@@ -23,6 +23,7 @@ That keeps the waste detection independent of the main ingestion path.
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 from collections import defaultdict
@@ -159,6 +160,173 @@ def _detect_repeated_reads(tool_calls):
     return len(repeats), {"files": [{"path": p, "reads": c} for p, c in repeats.items()]}
 
 
+# ─── BAD_COMPACT detection (v2-F3) ───────────────────────────────
+#
+# A "bad compact" is a compact event where the next 1–3 user messages
+# reference context that was almost certainly summarised away. We proxy
+# this by regex-matching the user text for referential pronouns,
+# temporal references, and callbacks to conversation history.
+
+_BAD_COMPACT_SIGNALS = (
+    (r"\bthat file\b|\bthe file\b|\bthe one\b", "file_reference"),
+    (r"\bwe were\b|\bwe just\b|\bbefore\b|\bearlier\b", "temporal_reference"),
+    (r"\bthe error\b|\bit returned\b|\bthe output\b", "output_reference"),
+    (r"\blike we discussed\b|\bas you said\b|\byou mentioned\b", "conversation_reference"),
+    (r"\bremember\b|\bwe decided\b|\bwe agreed\b", "memory_reference"),
+)
+
+_BAD_COMPACT_MIN_CONTEXT_PCT = 60
+_BAD_COMPACT_MAX_CANDIDATES = 50
+_BAD_COMPACT_LOOKAHEAD = 3
+_BAD_COMPACT_MIN_SIGNALS = 2
+
+
+def _parse_ts(raw):
+    """Minimal ISO/epoch timestamp parser (mirrors scanner.parse_timestamp).
+    Local copy to avoid importing scanner (would create a circular import)."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        clean = raw.replace("Z", "").replace("+00:00", "")
+        if "." in clean:
+            clean = clean.split(".")[0]
+        if "T" in clean:
+            from datetime import datetime, timezone
+            dt = datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S")
+            return int(dt.replace(tzinfo=timezone.utc).timestamp())
+    except Exception:
+        pass
+    return None
+
+
+def _extract_user_text(obj):
+    """Plain-text contents of a user message (empty string if not a user
+    message or if content is non-text like a tool_result)."""
+    if obj.get("type") != "user":
+        return ""
+    msg = obj.get("message") or {}
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            # Text blocks: direct user prose
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+            # tool_result blocks are NOT the user's words — skip
+        return "\n".join(parts)
+    return ""
+
+
+def _iter_jsonl(filepath):
+    """Yield parsed JSONL objects. Ignores bad lines / I/O errors."""
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return
+
+
+def detect_bad_compacts(conn, project=None, days=30):
+    """Return a list of bad-compact event dicts for the given project (or all
+    projects if None). Never raises; returns [] on empty/error."""
+    try:
+        since = int(time.time()) - (days * 86400)
+        sql = ("SELECT session_id, project, timestamp, context_pct_at_event, event_metadata "
+               "FROM lifecycle_events "
+               "WHERE event_type = 'compact' "
+               "  AND context_pct_at_event > ? "
+               "  AND timestamp >= ?")
+        params = [_BAD_COMPACT_MIN_CONTEXT_PCT, since]
+        if project:
+            sql += " AND project = ?"
+            params.append(project)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(_BAD_COMPACT_MAX_CANDIDATES)
+        compacts = conn.execute(sql, params).fetchall()
+    except Exception:
+        return []
+
+    if not compacts:
+        return []
+
+    compiled = [(re.compile(pat, re.IGNORECASE), label)
+                for pat, label in _BAD_COMPACT_SIGNALS]
+    results = []
+
+    for c in compacts:
+        sid = c["session_id"]
+        proj = c["project"]
+        compact_ts = c["timestamp"]
+        compact_pct = c["context_pct_at_event"]
+
+        # Resolve the JSONL file for this session. sessions.source_path is
+        # populated by scanner for every row of the session.
+        try:
+            fp_row = conn.execute(
+                "SELECT source_path FROM sessions "
+                "WHERE session_id = ? AND source_path IS NOT NULL AND source_path != '' "
+                "LIMIT 1",
+                (sid,),
+            ).fetchone()
+        except Exception:
+            continue
+        if not fp_row or not fp_row[0] or not os.path.isfile(fp_row[0]):
+            continue
+        filepath = fp_row[0]
+
+        user_msgs = []
+        for obj in _iter_jsonl(filepath):
+            if obj.get("type") != "user":
+                continue
+            ts = _parse_ts(obj.get("timestamp") or obj.get("ts"))
+            if ts is None or ts <= compact_ts:
+                continue
+            text = _extract_user_text(obj)
+            if not text or not text.strip():
+                continue
+            user_msgs.append((ts, text))
+            if len(user_msgs) >= _BAD_COMPACT_LOOKAHEAD:
+                break
+
+        if not user_msgs:
+            continue
+
+        combined = "\n".join(m[1] for m in user_msgs)
+        signals_found = [label for rx, label in compiled if rx.search(combined)]
+        if len(signals_found) < _BAD_COMPACT_MIN_SIGNALS:
+            continue
+
+        severity = "high" if len(signals_found) >= 3 else "medium"
+        results.append({
+            "session_id": sid,
+            "project": proj,
+            "compact_timestamp": compact_ts,
+            "context_pct_at_compact": compact_pct,
+            "signals_found": signals_found,
+            "sample_message": user_msgs[0][1][:200],
+            "severity": severity,
+        })
+
+    return results
+
+
 # ─── Main detection pass ─────────────────────────────────────────
 
 def detect_all(conn=None):
@@ -285,6 +453,28 @@ def detect_all(conn=None):
         )
         deep_count += 1
 
+    # ── 5: BAD_COMPACT — compacts followed by "dropped context" user messages ──
+    bad_compact_count = 0
+    try:
+        bad_rows = detect_bad_compacts(conn)
+        for bc in bad_rows:
+            # Look up account for the session (insert_waste_event needs it)
+            acct_row = conn.execute(
+                "SELECT account, COUNT(*) AS turns, COALESCE(SUM(cost_usd),0) AS cost "
+                "FROM sessions WHERE session_id = ?",
+                (bc["session_id"],),
+            ).fetchone()
+            account = (acct_row["account"] if acct_row and acct_row["account"] else "all")
+            turns = acct_row["turns"] if acct_row else 0
+            cost = float(acct_row["cost"] or 0) if acct_row else 0.0
+            insert_waste_event(
+                conn, bc["session_id"], bc["project"], account,
+                "bad_compact", bc["severity"], turns, cost, bc,
+            )
+            bad_compact_count += 1
+    except Exception as e:
+        print(f"[waste_patterns] bad_compact detection error: {e}", file=__import__("sys").stderr)
+
     # Record scan timestamp for incremental next run
     set_setting(conn, "last_waste_scan", str(int(time.time())))
     conn.commit()
@@ -294,6 +484,7 @@ def detect_all(conn=None):
         "repeated_reads": repeated_count,
         "cost_outliers": outlier_count,
         "deep_no_compact": deep_count,
+        "bad_compacts": bad_compact_count,
     }
 
     if should_close:
@@ -317,8 +508,20 @@ def waste_summary_by_project(conn, days=7):
         "repeated_read_sessions": 0,
         "cost_outliers": 0,
         "deep_no_compact": 0,
+        "bad_compacts": 0,
+        "bad_compact_severity": None,
         "total_waste_cost_est": 0.0,
     })
+    # Severity needs a second pass — compute max severity per project
+    sev_rows = conn.execute(
+        "SELECT project, MAX(CASE severity WHEN 'high' THEN 3 WHEN 'red' THEN 3 "
+        "                              WHEN 'medium' THEN 2 WHEN 'amber' THEN 2 ELSE 1 END) AS s "
+        "FROM waste_events WHERE pattern_type='bad_compact' AND detected_at >= ? "
+        "GROUP BY project",
+        (since,),
+    ).fetchall()
+    sev_by_proj = {r["project"] or "Other": r["s"] for r in sev_rows}
+
     for r in rows:
         proj = r["project"] or "Other"
         pt = r["pattern_type"]
@@ -333,4 +536,8 @@ def waste_summary_by_project(conn, days=7):
             result[proj]["cost_outliers"] = n
         elif pt == "deep_no_compact":
             result[proj]["deep_no_compact"] = n
+        elif pt == "bad_compact":
+            result[proj]["bad_compacts"] = n
+            s = sev_by_proj.get(proj, 1)
+            result[proj]["bad_compact_severity"] = "high" if s >= 3 else ("medium" if s == 2 else "low")
     return {p: dict(v) for p, v in result.items()}

@@ -1174,6 +1174,7 @@ function authHeaders() {
       return;
     }
     const lifecycle = data.lifecycle || {};
+    const contextRot = data.context_rot || {};
     $('proj-body').innerHTML = projs.map((p, i) => {
       const model = p.dominant_model ? p.dominant_model.replace('claude-', '') : 'sonnet';
       const share = p.token_share_pct || 0;
@@ -1208,7 +1209,8 @@ function authHeaders() {
               '<div class="kv"><span class="k">cache ROI</span><span class="v">' + fmtMoney(p.cache_roi_usd || 0) + '</span></div>' +
               (rs > 0 ? '<div class="kv"><span class="k">rightsizing saves</span><span class="v">' + fmtMoney(rs) + '/mo</span></div>' : '') +
             '</div>' +
-            renderSessionHealthBlock(p.name, lifecycle[p.name] || {}) +
+            renderSessionHealthBlock(p.name, lifecycle[p.name] || {}, waste[p.name] || {}) +
+            renderContextRotBlock(p.name, contextRot[p.name] || null) +
             renderSubagentBlock(p.name, subagents[p.name] || {}) +
             renderWasteBlock(p.name, waste[p.name] || {}) +
           '</td>' +
@@ -1224,7 +1226,7 @@ function authHeaders() {
     });
   }
 
-  function renderSessionHealthBlock(projName, lc) {
+  function renderSessionHealthBlock(projName, lc, wasteForProj) {
     if (!lc) return '';
     const compacts = lc.compact_count || 0;
     const spawns = lc.subagent_spawn_count || 0;
@@ -1257,6 +1259,85 @@ function authHeaders() {
     html += '<div class="kv"><span class="k">sub-agent spawns</span><span class="v">' + fmtNum(spawns) + '</span></div>';
     html += '</div>';
     html += '<div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:' + tone + '">' + esc(rec) + '</div>';
+    // v2-F3: one-liner if bad compacts exist for this project
+    const badN = wasteForProj && wasteForProj.bad_compacts ? wasteForProj.bad_compacts : 0;
+    if (badN > 0) {
+      const sev = (wasteForProj && wasteForProj.bad_compact_severity) || 'medium';
+      const badTone = sev === 'high' ? 'var(--accent-red)' : 'var(--accent-amber)';
+      html += '<div style="margin-top:4px;font-family:var(--mono);font-size:11px;color:' + badTone + '">' +
+              fmtNum(badN) + ' bad compact' + (badN === 1 ? '' : 's') +
+              ' detected \u2014 /compact with direction recommended</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderContextRotBlock(projName, cr) {
+    if (!cr) return '';
+    const buckets = cr.buckets || [];
+    // Nothing to show at all → skip (no noise for empty states with no data)
+    if (!buckets.length && !cr.recommendation) return '';
+
+    // Header tone: red if inflection detected, tertiary if not enough data, green otherwise
+    let tone = 'var(--accent-green)';
+    if (!cr.data_sufficient) tone = 'var(--text-tertiary)';
+    else if (cr.inflection_bucket !== null && cr.inflection_bucket !== undefined) tone = 'var(--accent-amber)';
+
+    let html = '<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">';
+    html += '<div class="k" style="font-family:var(--sans);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:' + tone + ';margin-bottom:8px">Context rot (output/input by turn depth)</div>';
+
+    if (!buckets.length || !cr.data_sufficient) {
+      const note = cr.recommendation || 'not enough data yet';
+      html += '<div style="font-family:var(--mono);font-size:11px;color:var(--text-tertiary)">' + esc(note) + '</div>';
+      html += '</div>';
+      return html;
+    }
+
+    // SVG line chart. viewBox coords are unitless; CSS sets actual pixel size.
+    const W = 400, H = 100, PAD_X = 6, PAD_Y = 10;
+    const plotW = W - PAD_X * 2;
+    const plotH = H - PAD_Y * 2;
+    const ratios = buckets.map(b => b.avg_ratio || 0);
+    const maxR = Math.max.apply(null, ratios.concat([0.0001]));
+    const n = buckets.length;
+    function xAt(i) { return PAD_X + (n <= 1 ? plotW / 2 : (i * plotW) / (n - 1)); }
+    function yAt(r) { return PAD_Y + plotH - (r / maxR) * plotH; }
+
+    const points = buckets.map((b, i) => xAt(i).toFixed(1) + ',' + yAt(b.avg_ratio || 0).toFixed(1)).join(' ');
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:100px;display:block" preserveAspectRatio="none">';
+    // Baseline at bucket 0 ratio, for visual reference
+    const baseY = yAt(ratios[0]).toFixed(1);
+    svg += '<line x1="' + PAD_X + '" y1="' + baseY + '" x2="' + (W - PAD_X) + '" y2="' + baseY + '" stroke="var(--border)" stroke-width="1" stroke-dasharray="3,3" />';
+    // Main polyline
+    svg += '<polyline fill="none" stroke="var(--accent-green)" stroke-width="1.5" points="' + points + '" />';
+    // Inflection marker (vertical dashed line + label)
+    let infLabel = '';
+    if (cr.inflection_bucket !== null && cr.inflection_bucket !== undefined) {
+      const infIdx = buckets.findIndex(b => b.bucket === cr.inflection_bucket);
+      if (infIdx >= 0) {
+        const ix = xAt(infIdx).toFixed(1);
+        svg += '<line x1="' + ix + '" y1="0" x2="' + ix + '" y2="' + H + '" stroke="var(--accent-red)" stroke-width="1" stroke-dasharray="2,3" />';
+        infLabel = 'rot starts ~turn ' + (cr.inflection_bucket * 10);
+      }
+    }
+    // Endpoint dots
+    svg += '<circle cx="' + xAt(0).toFixed(1) + '" cy="' + yAt(ratios[0]).toFixed(1) + '" r="2" fill="var(--accent-green)" />';
+    svg += '<circle cx="' + xAt(n - 1).toFixed(1) + '" cy="' + yAt(ratios[n - 1]).toFixed(1) + '" r="2" fill="var(--accent-green)" />';
+    svg += '</svg>';
+
+    html += svg;
+
+    // X-axis labels: first and last bucket only (keeps chart readable)
+    html += '<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--text-tertiary);margin-top:2px">';
+    html += '<span>turn ' + esc(buckets[0].label) + '</span>';
+    if (infLabel) {
+      html += '<span style="color:var(--accent-red)">' + esc(infLabel) + '</span>';
+    }
+    html += '<span>turn ' + esc(buckets[buckets.length - 1].label) + '</span>';
+    html += '</div>';
+
+    html += '<div style="margin-top:6px;font-family:var(--mono);font-size:11px;color:' + tone + '">' + esc(cr.recommendation || '') + '</div>';
     html += '</div>';
     return html;
   }
@@ -1317,14 +1398,32 @@ function authHeaders() {
       session_expiry: 'red', pro_messages_low: 'amber',
       floundering_detected: 'red', subagent_cost_spike: 'amber',
       budget_warning: 'amber', budget_exceeded: 'red',
+      bad_compact_detected: 'red',
     };
     $('ins-list').innerHTML = ins.map(i => {
       const dot = dotMap[i.insight_type] || 'blue';
       const when = i.created_at ? new Date(i.created_at * 1000).toLocaleString('en-US', {hour:'2-digit', minute:'2-digit', month:'short', day:'numeric'}) : '';
+      // v2-F3: bad_compact_detected gets an expanded card with a copyable
+      // /compact instruction. Parse detail_json for the compact_instruction.
+      let extra = '';
+      if (i.insight_type === 'bad_compact_detected') {
+        let instr = '';
+        try {
+          const d = JSON.parse(i.detail_json || '{}');
+          instr = d.compact_instruction || '';
+        } catch (e) { /* malformed detail_json — render without the code block */ }
+        const title = 'Bad compact detected \u2014 context dropped';
+        if (instr) {
+          extra = (
+            '<div style="margin-top:6px;font-family:var(--sans);font-size:11px;font-weight:500;color:var(--accent-red);text-transform:uppercase;letter-spacing:0.06em">' + esc(title) + '</div>' +
+            '<pre style="margin:6px 0 0 0;padding:8px 10px;background:var(--bg-alt,#F0EDE6);border:1px solid var(--border);border-radius:3px;font-family:var(--mono);font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word">' + esc(instr) + '</pre>'
+          );
+        }
+      }
       return (
         '<div class="insight-row" data-id="' + i.id + '">' +
           '<div class="insight-dot ' + dot + '"></div>' +
-          '<div class="insight-msg">' + esc(i.message) + '</div>' +
+          '<div class="insight-msg">' + esc(i.message) + (extra ? '<br>' + extra : '') + '</div>' +
           '<div class="insight-meta">' + esc(when) + '</div>' +
           '<button class="insight-dismiss" data-dismiss="' + i.id + '">×</button>' +
         '</div>'

@@ -98,3 +98,35 @@ CLAUDE_AI_ACCOUNTS = []
 # Example:
 #   COST_TARGETS = {"MyProject": 0.10}
 COST_TARGETS = {}
+
+# ─── v2-F3: /compact direction templates per project ──────────────
+# When Claudash detects a BAD_COMPACT event, it surfaces a suggested
+# /compact invocation so the user can retain the key context on the
+# next pass. Keyed by project name — add entries for your own projects.
+# Fallback is COMPACT_INSTRUCTIONS["default"].
+COMPACT_INSTRUCTIONS = {
+    "Tidify": (
+        "/compact Focus on: current file being normalized, "
+        "column mapping decisions, validation errors seen"
+    ),
+    "WikiLoop": (
+        "/compact Focus on: articles being compiled, "
+        "WikiScore results, pending gap topics"
+    ),
+    "Claudash": (
+        "/compact Focus on: current bug/feature in progress, "
+        "files modified this session, verification gates remaining"
+    ),
+    "Brainworks": (
+        "/compact Focus on: current component being edited, "
+        "API shape decisions, pending test fixtures"
+    ),
+    "CareerOps": (
+        "/compact Focus on: current candidate pipeline stage, "
+        "filter rules in play, roster columns being normalized"
+    ),
+    "default": (
+        "/compact Focus on: [current task] "
+        "[key decisions made] [files in scope]"
+    ),
+}
