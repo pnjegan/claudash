@@ -880,3 +880,57 @@
 
 - **INTERNALS.md, CLAUDASH_V2_PRD.md, ecosystem.config.js, fix_tracker.py** — carried uncommitted from earlier sessions. Not touched this session.
   Why deferred: outside this session's scope.
+
+## [2026-04-16] Session 14 — Agentic loop Phase 1: insight → fix → apply + auto-measure
+
+### Fixed
+- **`fix_generator.generate_fix()` returned the CLAUDE.md target path but dropped it on the floor** — the throwaway `_claude_md_path` variable prevented the applier from knowing where to write. Now returned as `claude_md_path` in the result dict and persisted to `fixes.applied_to_path` by `insert_generated_fix()` (column already existed, was unused).
+  Why: without it, the apply endpoint would need to re-run discovery on every click and mtime-check drift would be possible.
+  Files: fix_generator.py (generate_fix, insert_generated_fix)
+
+### Added
+- **`POST /api/insights/{id}/generate-fix`** — one-click insight → fix path. Maps `insight_type → waste_events.pattern_type` via a dedicated table (floundering_detected→floundering, compaction_gap→deep_no_compact, cache_spike→repeated_reads, subagent_cost_spike→cost_outlier, bad_compact_detected→bad_compact) with a fallback to any-recent-waste_event-for-project for looser insights (model_waste, window_risk, budget_*). Calls `generate_fix(waste_event_id, conn)` → `insert_generated_fix()` → returns rule_text, reasoning, risk, impact, target path, model used. Graceful error if no provider configured.
+  Files: server.py (new do_POST handler)
+
+- **`POST /api/fixes/{id}/apply`** — writes a proposed fix's rule_text to the target CLAUDE.md. Creates `CLAUDE.md.claudash-backup-<timestamp>` first. Appends a commented block (`<!-- Added by Claudash fix #N YYYY-MM-DD -->` + rule_text). Transitions status `proposed → applied` and captures a fresh baseline (via `capture_baseline()`) so the next auto-measure cycle has a valid reference point. Only accepts `status in ('proposed','applied')`.
+  Files: server.py (new do_POST handler)
+
+- **Dashboard "Generate Fix" button** on every red/amber insight card. Inline expansion shows generated rule with monospace rule_text block, reasoning (italic), risk/impact/target badges, and an "Apply to CLAUDE.md" button. On success, shows the backup path and auto-refreshes. Fixable types whitelist lives in `fixableTypes` set at the top of `renderInsights()`. New `fix_regressing` entry added to `dotMap` (→ red dot).
+  Files: templates/dashboard.html (renderInsights + click handlers)
+
+- **`scanner._auto_measure_fixes(conn)`** — runs every periodic cycle after `detect_all()` + `generate_mcp_warnings()`. Iterates `fixes WHERE status IN ('applied','measuring')`, gates on `days_elapsed ≥ 1` AND `new_sessions_since_baseline ≥ 3`, plus a 6-hour dedup window on `fix_measurements.measured_at` to prevent 288 rows/day per fix (BUG-004 guardrail). Calls existing `measure_fix(conn, fix_id)` which already persists the measurement and updates status. On `verdict='worsened'`, inserts a `fix_regressing` insight with a 24-hour dedup check against its own `detail_json` (contains `fix_id`). Logs `[scanner] Auto-measured N fix(es)` to stderr on any actual measurement.
+  Files: scanner.py (new helper + wired into start_periodic_scan)
+
+### Architecture Decisions
+- **Mapping insight_type → waste pattern is a hardcoded table in the handler**, not derived from a DB column. Reason: insights are generated from many sources (model_mix, window utilization, subagent spikes) and most don't carry a direct `waste_event_id`. A join-table would add a migration for marginal value. Fallback to "most recent waste_event for this project" handles insights without a strict pattern mapping (model_waste, window_risk).
+  Impact: adding a new insight type means updating `PATTERN_MAP` in server.py (~line 860) and `fixableTypes` in dashboard.html (~line 1495). Documented in the code comments.
+
+- **Apply endpoint captures a fresh baseline on status transition, not at generation time** — the generator might run hours or days before the user clicks Apply, and the project's state can shift meaningfully in that gap. Capturing baseline at apply-time means `fix_measurements` delta computation has the correct reference.
+  Impact: if generation and apply happen in the same session, baseline is "now"; if they're spread out, baseline is "when applied" — always accurate to the moment the fix hit the user's CLAUDE.md.
+
+- **6-hour measurement dedup** in auto-measure is a hard invariant, not a config. Reason: the scanner fires every 5 minutes (288 ticks/day) and a fix in 'measuring' status would accumulate 288 `fix_measurements` rows per day without it. 6h is the smallest window that still produces 4 measurements/day — enough for a meaningful trajectory without DB bloat.
+  Impact: `BUG-004 fix measurement dedup` from CLAUDASH_COMPLETE_WRITEUP.md Appendix L P7 is now structurally impossible. Can remove from the next-steps list.
+
+- **`measure_fix()` wrapper reused instead of inlining the measurement flow** — the user's spec had manual `insert_fix_measurement()` + status updates; `measure_fix()` already does that and also promotes to `confirmed` on `improving` + 7 days elapsed. Reusing it preserves the promotion logic and keeps one code path for manual and automated measurements.
+  Impact: both `POST /api/fixes/{id}/measure` (manual) and `_auto_measure_fixes()` produce identical DB state.
+
+### Known Issues / Not Done
+- **P3 (root-cause diagnosis)** — new function `diagnose_waste_event(waste_event_id)` that reads JSONL for flagged sessions, identifies which files/turns/patterns are at fault. Not built — adds 3 hours of work and a new code path. Spec present in the session prompt.
+  Why deferred: user explicitly scoped this session to P1+P2.
+
+- **P4 (fix chains)** — `build_fix_chain(project)` that orders related insights by dependency and estimates combined impact. Not built. Spec present in the session prompt.
+  Why deferred: same as P3.
+
+- **P5 (full agent loop: `claudash agent --project X`)** — long-running mode that diagnoses all waste, queues fixes, applies on approval, measures, iterates. Not built.
+  Why deferred: full-session work; the building blocks landed this session (generate, apply, auto-measure) so P5 is composable from them later.
+
+- **Generate Fix can't be exercised end-to-end without an LLM provider** — current smoke test shows the graceful error path. A real round-trip requires `claudash keys --set-provider` (Groq free tier recommended, per Appendix K).
+  Why deferred: user hasn't configured a provider yet; error path is the expected behavior without one.
+
+- **`fix_regressing` insight type has no dashboard-specific rendering** — shows as a generic red-dot row. An expanded card (like `bad_compact_detected` gets) with a "Generate corrective fix" shortcut would be natural next work.
+  Why deferred: not in the P1+P2 scope; the core signal (it fires) works.
+
+- **Auto-measure currently no-ops on all 5 existing fixes** — they were last measured 5.3 hours ago in earlier sessions, so the 6h dedup correctly skipped them. Next cycle (after the 6h window elapses) will measure them automatically without intervention.
+  Why this isn't a bug: it's the guardrail working as designed.
+
+- **Non-session commits landed mid-session** (`05df213` 2.0.0 bump, `7708e22` PRD+INTERNALS+.gitignore, `064aee5` test runner fixes, `694cc9c` test runner v2.0.0 accept) — not from this session's work, pushed externally. Noted so CHANGELOG doesn't double-count them.
