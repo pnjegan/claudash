@@ -30,7 +30,7 @@ from db import (
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 from _version import VERSION
-from analyzer import full_analysis, project_metrics, window_intelligence, trend_metrics
+from analyzer import full_analysis, project_metrics, window_intelligence, trend_metrics, lifecycle_summary
 from scanner import scan_all, get_last_scan_time, preview_paths, discover_claude_paths, is_scan_running
 from insights import generate_insights
 from claude_ai_tracker import (
@@ -277,6 +277,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+        elif path == "/api/lifecycle":
+            project = params.get("project", [None])[0]
+            days_raw = params.get("days", ["30"])[0]
+            try:
+                days = max(1, min(int(days_raw), 365))
+            except ValueError:
+                days = 30
+            if project and not re.match(r"^[A-Za-z0-9_\- ]{1,64}$", project):
+                self._serve_json({"error": "invalid project"}, 400)
+                return
+            conn = get_conn()
+            try:
+                data = lifecycle_summary(conn, project, days)
+            finally:
+                conn.close()
+            self._serve_json(data)
 
         elif path == "/health":
             conn = get_conn()

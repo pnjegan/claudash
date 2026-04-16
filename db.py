@@ -100,6 +100,9 @@ def init_db():
         ("tokens_after_compact", "INTEGER"),
         ("is_subagent", "INTEGER DEFAULT 0"),
         ("parent_session_id", "TEXT"),
+        ("compact_count", "INTEGER DEFAULT 0"),
+        ("subagent_count", "INTEGER DEFAULT 0"),
+        ("compact_timing_pct", "REAL"),
     ]:
         if not _column_exists(conn, "sessions", col):
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
@@ -242,6 +245,23 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_fm_fix ON fix_measurements(fix_id);
         CREATE INDEX IF NOT EXISTS idx_fm_measured ON fix_measurements(measured_at);
+    """)
+
+    # --- v2 lifecycle events (compact, subagent_spawn) ---
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS lifecycle_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            context_pct_at_event REAL,
+            event_metadata TEXT,
+            created_at INTEGER DEFAULT (strftime('%s','now')),
+            UNIQUE(session_id, event_type, timestamp)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lifecycle_project ON lifecycle_events(project);
+        CREATE INDEX IF NOT EXISTS idx_lifecycle_type ON lifecycle_events(event_type);
     """)
 
     # --- claude.ai browser tracking tables ---
@@ -708,6 +728,33 @@ def get_waste_events_by_project(conn, days=7):
         (since,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_lifecycle_events(conn, project=None, days=30):
+    since = int(time.time()) - (days * 86400)
+    sql = ("SELECT session_id, project, event_type, timestamp, "
+           "context_pct_at_event, event_metadata, created_at "
+           "FROM lifecycle_events WHERE timestamp >= ?")
+    params = [since]
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    sql += " ORDER BY timestamp DESC"
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def insert_lifecycle_event(conn, session_id, project, event_type, timestamp,
+                           context_pct, metadata_json):
+    """INSERT OR IGNORE a lifecycle event. UNIQUE constraint dedups.
+    Returns True if a new row was inserted."""
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO lifecycle_events
+           (session_id, project, event_type, timestamp, context_pct_at_event, event_metadata)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (session_id, project, event_type, int(timestamp), context_pct, metadata_json),
+    )
+    return cur.rowcount > 0
 
 
 def update_account_daily_budget(conn, account_id, budget_usd):

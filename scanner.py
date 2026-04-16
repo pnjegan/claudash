@@ -6,7 +6,11 @@ import threading
 from datetime import datetime, timezone
 
 from config import UNKNOWN_PROJECT, MODEL_PRICING
-from db import get_conn, insert_session, get_accounts_config, get_project_map_config
+from db import (
+    get_conn, insert_session, get_accounts_config, get_project_map_config,
+    insert_lifecycle_event,
+)
+from insights import generate_insights
 
 _last_scan_time = 0
 _scan_lock = threading.Lock()  # serializes scan_all() across threads
@@ -275,6 +279,160 @@ def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=Non
     return added
 
 
+_CONTEXT_LIMIT = 1_000_000  # Max plan context cap, used for context_pct calcs
+_SUBAGENT_TOOL_NAMES = ("Agent", "Task")  # Claude Code subagent-spawn tool names
+
+
+def _iter_messages(filepath):
+    """Yield parsed JSONL objects from a file in file order. Ignores bad JSON."""
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return
+
+
+def _message_usage(obj):
+    """Extract the usage dict from a parsed JSONL object."""
+    if "message" in obj and isinstance(obj["message"], dict):
+        u = obj["message"].get("usage")
+        if isinstance(u, dict):
+            return u
+    u = obj.get("usage")
+    return u if isinstance(u, dict) else {}
+
+
+def _iter_assistant_tool_uses(obj):
+    """Yield tool_use blocks inside an assistant message."""
+    if obj.get("type") != "assistant":
+        return
+    msg = obj.get("message") or {}
+    if not isinstance(msg, dict):
+        return
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            yield block
+
+
+def detect_lifecycle_events(messages, session_id, project, conn):
+    """Scan a parsed message list for one session; emit compact + subagent_spawn
+    lifecycle events. Dedup is handled by the UNIQUE (session_id, event_type,
+    timestamp) constraint. Returns count of newly-inserted events.
+    """
+    if not session_id or not project or not messages:
+        return 0
+
+    # Build a per-turn view: timestamp + context size (input + cache_read) +
+    # tool_use blocks. Only assistant messages with usage participate in the
+    # compact heuristic (matches _parse_line's filter — tool_result/user/system
+    # messages have no usage and would otherwise read as ctx=0 and trigger
+    # false "compacts" on every turn).
+    turns = []
+    for idx, obj in enumerate(messages):
+        ts_raw = obj.get("timestamp") or obj.get("ts")
+        ts = None
+        if isinstance(ts_raw, str):
+            ts = parse_timestamp(ts_raw)
+        elif isinstance(ts_raw, (int, float)):
+            ts = int(ts_raw)
+        if not ts:
+            continue
+        if obj.get("type") != "assistant":
+            continue
+        usage = _message_usage(obj)
+        input_t = usage.get("input_tokens", 0) or 0
+        output_t = usage.get("output_tokens", 0) or 0
+        cache_r = usage.get("cache_read_input_tokens", 0) or 0
+        if input_t == 0 and output_t == 0:
+            continue
+        ctx = input_t + cache_r
+        tool_uses = list(_iter_assistant_tool_uses(obj))
+        turns.append({"turn_idx": idx, "timestamp": ts, "ctx": ctx, "tool_uses": tool_uses})
+
+    emitted = 0
+
+    # COMPACT: same heuristic as _detect_compaction — ctx drops >30% between
+    # consecutive turns, previous ctx must be >1000 to avoid early-session noise.
+    for i in range(1, len(turns)):
+        prev_ctx = turns[i - 1]["ctx"]
+        curr_ctx = turns[i]["ctx"]
+        if prev_ctx > 1000 and curr_ctx < prev_ctx * 0.7:
+            context_pct = round(prev_ctx / _CONTEXT_LIMIT * 100, 2)
+            meta = json.dumps({
+                "tokens_before": prev_ctx,
+                "tokens_after": curr_ctx,
+                "turn": turns[i]["turn_idx"],
+            })
+            if insert_lifecycle_event(
+                conn, session_id, project, "compact",
+                turns[i]["timestamp"], context_pct, meta,
+            ):
+                emitted += 1
+
+    # SUBAGENT_SPAWN: every Task/Agent tool_use in an assistant message.
+    for turn in turns:
+        for tu in turn["tool_uses"]:
+            name = tu.get("name") or ""
+            if name not in _SUBAGENT_TOOL_NAMES:
+                continue
+            inp = tu.get("input") if isinstance(tu.get("input"), dict) else {}
+            desc = str(inp.get("description") or inp.get("prompt") or "")[:200]
+            context_pct = round(turn["ctx"] / _CONTEXT_LIMIT * 100, 2) if turn["ctx"] > 0 else None
+            meta = json.dumps({
+                "turn": turn["turn_idx"],
+                "task_description": desc,
+                "tool": name,
+            })
+            if insert_lifecycle_event(
+                conn, session_id, project, "subagent_spawn",
+                turn["timestamp"], context_pct, meta,
+            ):
+                emitted += 1
+
+    return emitted
+
+
+def scan_lifecycle_events(conn):
+    """Iterate every file in scan_state, group messages by sessionId, run
+    detect_lifecycle_events. Cheap re-reads are fine — UNIQUE constraint dedups.
+    Returns (events_inserted, files_processed)."""
+    rows = conn.execute("SELECT file_path FROM scan_state").fetchall()
+    total_events = 0
+    files_done = 0
+    for r in rows:
+        filepath = r[0]
+        if not os.path.isfile(filepath):
+            continue
+        messages_by_sid = {}
+        for obj in _iter_messages(filepath):
+            sid = obj.get("sessionId") or obj.get("session_id") or obj.get("uuid")
+            if not sid:
+                continue
+            messages_by_sid.setdefault(sid, []).append(obj)
+        if not messages_by_sid:
+            continue
+        for sid, msgs in messages_by_sid.items():
+            row = conn.execute(
+                "SELECT project FROM sessions WHERE session_id = ? LIMIT 1", (sid,),
+            ).fetchone()
+            if not row or not row["project"]:
+                continue
+            total_events += detect_lifecycle_events(msgs, sid, row["project"], conn)
+        files_done += 1
+    conn.commit()
+    return total_events, files_done
+
+
 def scan_all(account_filter=None):
     """Walk all configured data_paths and scan JSONL files incrementally.
     Serialized via _scan_lock — concurrent callers wait for the in-flight scan."""
@@ -310,6 +468,17 @@ def _scan_all_locked(account_filter=None):
                         files_scanned += 1
 
     conn.commit()
+
+    # Lifecycle event detection pass — reads tool_use blocks and compact events
+    # from every tracked JSONL. Runs after the main scan so sessions rows exist
+    # for project lookup. UNIQUE constraint makes it idempotent.
+    try:
+        evts, _files = scan_lifecycle_events(conn)
+        if evts:
+            print(f"[scanner] Lifecycle: {evts} new events", file=sys.stderr)
+    except Exception as e:
+        print(f"[scanner] Lifecycle detection error: {e}", file=sys.stderr)
+
     conn.close()
     _last_scan_time = int(time.time())
     print(f"[scanner] Scan complete: {total_added} new rows (incremental, {files_scanned} files changed)", file=sys.stderr)
@@ -397,6 +566,7 @@ def start_periodic_scan(interval_seconds=300):
         while True:
             try:
                 scan_all()
+                generate_insights()
             except Exception as e:
                 print(f"[scanner] Periodic scan error: {e}", file=sys.stderr)
             time.sleep(interval_seconds)

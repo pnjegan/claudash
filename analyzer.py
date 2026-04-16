@@ -641,6 +641,81 @@ def subagent_metrics(conn, account="all"):
     return result
 
 
+# ── Lifecycle events summary (v2-F1) ──
+
+def lifecycle_by_project(conn, days=30):
+    """Per-project rollup of lifecycle events for the dashboard. Returns a
+    dict keyed by project name with compact_count, subagent_spawn_count,
+    avg_compact_timing_pct, late_compacts (>75%)."""
+    since = _now() - (days * 86400)
+    rows = conn.execute(
+        "SELECT project, event_type, context_pct_at_event "
+        "FROM lifecycle_events WHERE timestamp >= ?",
+        (since,),
+    ).fetchall()
+    buckets = {}
+    for r in rows:
+        p = r["project"]
+        if p not in buckets:
+            buckets[p] = {
+                "compact_count": 0,
+                "subagent_spawn_count": 0,
+                "compact_pcts": [],
+                "late_compacts": 0,
+            }
+        b = buckets[p]
+        if r["event_type"] == "compact":
+            b["compact_count"] += 1
+            pct = r["context_pct_at_event"]
+            if pct is not None:
+                b["compact_pcts"].append(pct)
+                if pct > 75:
+                    b["late_compacts"] += 1
+        elif r["event_type"] == "subagent_spawn":
+            b["subagent_spawn_count"] += 1
+    result = {}
+    for p, b in buckets.items():
+        pcts = b.pop("compact_pcts")
+        avg = round(sum(pcts) / len(pcts), 1) if pcts else 0
+        b["avg_compact_timing_pct"] = avg
+        result[p] = b
+    return result
+
+
+def lifecycle_summary(conn, project=None, days=30):
+    """Roll up compact + subagent_spawn events for one project (or all).
+    A 'late compact' is one where context_pct_at_event > 75."""
+    since = _now() - (days * 86400)
+    sql = ("SELECT session_id, project, event_type, timestamp, "
+           "context_pct_at_event, event_metadata "
+           "FROM lifecycle_events WHERE timestamp >= ?")
+    params = [since]
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    sql += " ORDER BY timestamp DESC"
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    compacts = [r for r in rows if r["event_type"] == "compact"]
+    spawns = [r for r in rows if r["event_type"] == "subagent_spawn"]
+    compact_pcts = [r["context_pct_at_event"] for r in compacts
+                    if r.get("context_pct_at_event") is not None]
+    avg_timing = round(sum(compact_pcts) / len(compact_pcts), 1) if compact_pcts else 0
+    late_compacts = sum(1 for p in compact_pcts if p > 75)
+
+    return {
+        "project": project or "all",
+        "days": days,
+        "summary": {
+            "compact_count": len(compacts),
+            "subagent_spawn_count": len(spawns),
+            "avg_compact_timing_pct": avg_timing,
+            "late_compacts": late_compacts,
+        },
+        "events": rows,
+    }
+
+
 # ── Daily budget metrics ──
 
 def daily_budget_metrics(conn, account="all"):
@@ -868,6 +943,12 @@ def full_analysis(conn, account="all"):
     except Exception:
         waste_summary = {}
 
+    # v2-F1: lifecycle events per project (compact + subagent_spawn)
+    try:
+        lifecycle = lifecycle_by_project(conn, days=30)
+    except Exception:
+        lifecycle = {}
+
     # Efficiency score
     try:
         efficiency = compute_efficiency_score(conn, account)
@@ -889,6 +970,7 @@ def full_analysis(conn, account="all"):
         "subagent_metrics": sub_metrics,
         "daily_budget": budget_metrics,
         "waste_summary": waste_summary,
+        "lifecycle": lifecycle,
         "efficiency": efficiency,
         "generated_at": _now(),
     }

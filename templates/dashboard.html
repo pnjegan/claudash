@@ -1173,6 +1173,7 @@ function authHeaders() {
       $('proj-body').innerHTML = '<tr><td colspan="8" class="empty">' + esc(emptyMsg) + '</td></tr>';
       return;
     }
+    const lifecycle = data.lifecycle || {};
     $('proj-body').innerHTML = projs.map((p, i) => {
       const model = p.dominant_model ? p.dominant_model.replace('claude-', '') : 'sonnet';
       const share = p.token_share_pct || 0;
@@ -1207,6 +1208,7 @@ function authHeaders() {
               '<div class="kv"><span class="k">cache ROI</span><span class="v">' + fmtMoney(p.cache_roi_usd || 0) + '</span></div>' +
               (rs > 0 ? '<div class="kv"><span class="k">rightsizing saves</span><span class="v">' + fmtMoney(rs) + '/mo</span></div>' : '') +
             '</div>' +
+            renderSessionHealthBlock(p.name, lifecycle[p.name] || {}) +
             renderSubagentBlock(p.name, subagents[p.name] || {}) +
             renderWasteBlock(p.name, waste[p.name] || {}) +
           '</td>' +
@@ -1220,6 +1222,43 @@ function authHeaders() {
         if (exp) exp.style.display = exp.style.display === 'none' ? 'table-row' : 'none';
       });
     });
+  }
+
+  function renderSessionHealthBlock(projName, lc) {
+    if (!lc) return '';
+    const compacts = lc.compact_count || 0;
+    const spawns = lc.subagent_spawn_count || 0;
+    if (!compacts && !spawns) return '';
+    const avg = lc.avg_compact_timing_pct || 0;
+    const late = lc.late_compacts || 0;
+    // Color coding: green <65, amber 65-80, red >80
+    let tone = 'var(--accent-green)';
+    let rec = 'Good compaction timing';
+    if (compacts > 0 && avg > 80) {
+      tone = 'var(--accent-red)';
+      rec = 'Compact earlier — avg at ' + avg.toFixed(0) + '% context';
+    } else if (compacts > 0 && avg > 65) {
+      tone = 'var(--accent-amber)';
+      rec = 'Compact earlier — avg at ' + avg.toFixed(0) + '% context';
+    } else if (compacts === 0) {
+      tone = 'var(--text-tertiary)';
+      rec = 'No compact events in 30d';
+    }
+    let html = '<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">';
+    html += '<div class="k" style="font-family:var(--sans);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:' + tone + ';margin-bottom:8px">Session health</div>';
+    html += '<div class="kvs">';
+    html += '<div class="kv"><span class="k">compacts (30d)</span><span class="v">' + fmtNum(compacts) + '</span></div>';
+    if (compacts > 0) {
+      html += '<div class="kv"><span class="k">avg timing</span><span class="v" style="color:' + tone + '">' + avg.toFixed(1) + '%</span></div>';
+    }
+    if (late > 0) {
+      html += '<div class="kv"><span class="k">late (>75%)</span><span class="v" style="color:var(--accent-red)">' + fmtNum(late) + '</span></div>';
+    }
+    html += '<div class="kv"><span class="k">sub-agent spawns</span><span class="v">' + fmtNum(spawns) + '</span></div>';
+    html += '</div>';
+    html += '<div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:' + tone + '">' + esc(rec) + '</div>';
+    html += '</div>';
+    return html;
   }
 
   function renderSubagentBlock(projName, sm) {
