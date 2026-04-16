@@ -258,6 +258,25 @@ def init_db():
         if not _column_exists(conn, "fixes", col):
             conn.execute(f"ALTER TABLE fixes ADD COLUMN {col} {typedef}")
 
+    # --- v2-F5: MCP warning queue (bidirectional MCP) ---
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS mcp_warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            session_id TEXT,
+            warning_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'amber',
+            created_at INTEGER DEFAULT (strftime('%s','now')),
+            acknowledged_at INTEGER,
+            acknowledged_by TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_mcp_warnings_project
+            ON mcp_warnings(project);
+        CREATE INDEX IF NOT EXISTS idx_mcp_warnings_ack
+            ON mcp_warnings(acknowledged_at);
+    """)
+
     # --- v2 lifecycle events (compact, subagent_spawn) ---
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS lifecycle_events (
@@ -788,6 +807,45 @@ def insert_lifecycle_event(conn, session_id, project, event_type, timestamp,
         (session_id, project, event_type, int(timestamp), context_pct, metadata_json),
     )
     return cur.rowcount > 0
+
+
+# ── v2-F5: MCP warning queue helpers ──
+
+def insert_mcp_warning(conn, project, session_id, warning_type, message,
+                       severity="amber"):
+    """Insert a new MCP warning. Caller is responsible for dedup — see
+    the 6-hour window enforced by scanner.generate_mcp_warnings."""
+    conn.execute(
+        "INSERT INTO mcp_warnings "
+        "(project, session_id, warning_type, message, severity, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (project, session_id, warning_type, message, severity, int(time.time())),
+    )
+    conn.commit()
+
+
+def get_pending_warnings(conn, project=None):
+    """Return unacknowledged warnings (most-recent first), optionally
+    filtered by project."""
+    sql = "SELECT * FROM mcp_warnings WHERE acknowledged_at IS NULL"
+    params = []
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    sql += " ORDER BY created_at DESC"
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def acknowledge_warning(conn, warning_id, acknowledged_by="claude_code"):
+    """Mark a warning acknowledged. No-op if already acknowledged."""
+    conn.execute(
+        "UPDATE mcp_warnings "
+        "SET acknowledged_at = ?, acknowledged_by = ? "
+        "WHERE id = ? AND acknowledged_at IS NULL",
+        (int(time.time()), acknowledged_by, warning_id),
+    )
+    conn.commit()
 
 
 def update_account_daily_budget(conn, account_id, budget_usd):

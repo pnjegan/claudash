@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from config import UNKNOWN_PROJECT, MODEL_PRICING
 from db import (
     get_conn, insert_session, get_accounts_config, get_project_map_config,
-    insert_lifecycle_event,
+    insert_lifecycle_event, insert_mcp_warning,
 )
 from insights import generate_insights
 
@@ -561,12 +561,178 @@ def discover_claude_paths():
     return result
 
 
+# ─── v2-F5: MCP warning queue generator ─────────────────────────
+#
+# After each scan + waste-detection pass, push actionable warnings into
+# mcp_warnings. Dedup per (project, warning_type) on a 6-hour window so
+# Claude Code sessions that call claudash_get_warnings don't see the
+# same alert over and over.
+
+_MCP_WARNING_DEDUP_HOURS = 6
+_LATE_COMPACT_PCT_THRESHOLD = 80
+_LATE_COMPACT_MIN_COUNT = 3
+_REPEATED_READS_SPIKE_PCT = 20
+_BUDGET_WARNING_PCT = 0.80
+
+
+def _warning_exists_recent(conn, project, warning_type, hours=_MCP_WARNING_DEDUP_HOURS):
+    since = int(time.time()) - hours * 3600
+    row = conn.execute(
+        "SELECT 1 FROM mcp_warnings "
+        "WHERE project = ? AND warning_type = ? AND created_at >= ? LIMIT 1",
+        (project, warning_type, since),
+    ).fetchone()
+    return row is not None
+
+
+def generate_mcp_warnings(conn):
+    """Emit MCP warnings based on recent lifecycle/waste/budget state.
+    Idempotent per project+warning_type within a 6-hour window."""
+    now = int(time.time())
+    seven_days = now - 7 * 86400
+    fourteen_days = now - 14 * 86400
+    one_day = now - 86400
+    emitted = 0
+
+    # Rule 1 — LATE_COMPACT: >=3 compacts with context_pct > 80 in last 7 days
+    try:
+        rows = conn.execute(
+            "SELECT project, COUNT(*) AS n, AVG(context_pct_at_event) AS avg_pct "
+            "FROM lifecycle_events "
+            "WHERE event_type = 'compact' AND context_pct_at_event > ? "
+            "  AND timestamp >= ? "
+            "GROUP BY project "
+            "HAVING n >= ?",
+            (_LATE_COMPACT_PCT_THRESHOLD, seven_days, _LATE_COMPACT_MIN_COUNT),
+        ).fetchall()
+        for r in rows:
+            proj = r["project"] if hasattr(r, "keys") else r[0]
+            if not proj or _warning_exists_recent(conn, proj, "late_compact"):
+                continue
+            avg_pct = r["avg_pct"] if hasattr(r, "keys") else r[2]
+            msg = (
+                f"{proj} compacting late (avg {avg_pct:.0f}% context) — "
+                "run /compact earlier or lower autoCompactThreshold"
+            )
+            insert_mcp_warning(conn, proj, None, "late_compact", msg, "amber")
+            emitted += 1
+    except Exception as e:
+        print(f"[scanner] mcp_warnings late_compact error: {e}", file=sys.stderr)
+
+    # Rule 2 — REPEATED_READS_SPIKE: this-week count >20% above prior-week
+    try:
+        curr_rows = conn.execute(
+            "SELECT project, COUNT(*) AS n FROM waste_events "
+            "WHERE pattern_type = 'repeated_reads' "
+            "  AND detected_at >= ? GROUP BY project",
+            (seven_days,),
+        ).fetchall()
+        prev_rows = conn.execute(
+            "SELECT project, COUNT(*) AS n FROM waste_events "
+            "WHERE pattern_type = 'repeated_reads' "
+            "  AND detected_at >= ? AND detected_at < ? GROUP BY project",
+            (fourteen_days, seven_days),
+        ).fetchall()
+        prev_by_proj = {
+            (r["project"] if hasattr(r, "keys") else r[0]): (r["n"] if hasattr(r, "keys") else r[1])
+            for r in prev_rows
+        }
+        for r in curr_rows:
+            proj = r["project"] if hasattr(r, "keys") else r[0]
+            curr_n = r["n"] if hasattr(r, "keys") else r[1]
+            prev_n = prev_by_proj.get(proj, 0)
+            if prev_n <= 0 or not proj:
+                continue  # no prior baseline — skip spike logic
+            pct = (curr_n - prev_n) / prev_n * 100
+            if pct <= _REPEATED_READS_SPIKE_PCT:
+                continue
+            if _warning_exists_recent(conn, proj, "repeated_reads_spike"):
+                continue
+            top = conn.execute(
+                "SELECT id FROM waste_events "
+                "WHERE pattern_type = 'repeated_reads' AND project = ? "
+                "  AND detected_at >= ? "
+                "ORDER BY token_cost DESC LIMIT 1",
+                (proj, seven_days),
+            ).fetchone()
+            top_id = top[0] if top else None
+            tail = (f" — consider running: claudash fix generate {top_id}"
+                    if top_id is not None else "")
+            msg = f"{proj} repeated_reads up {pct:.0f}% this week{tail}"
+            insert_mcp_warning(conn, proj, None, "repeated_reads_spike", msg, "amber")
+            emitted += 1
+    except Exception as e:
+        print(f"[scanner] mcp_warnings repeated_reads_spike error: {e}", file=sys.stderr)
+
+    # Rule 3 — BUDGET_80PCT: any account over 80% of daily budget
+    try:
+        from analyzer import daily_budget_metrics as _dbm
+        dbm = _dbm(conn, "all")
+        for acct_id, b in (dbm or {}).items():
+            if not b.get("has_budget"):
+                continue
+            limit = b.get("budget_usd") or 0
+            cost = b.get("today_cost") or 0
+            if limit <= 0:
+                continue
+            ratio = cost / limit
+            if ratio < _BUDGET_WARNING_PCT:
+                continue
+            # Use account_id as the "project" slot so get_pending_warnings
+            # retrieval works symmetrically when filtered by project.
+            key = acct_id
+            if _warning_exists_recent(conn, key, "budget_80pct"):
+                continue
+            pct = ratio * 100
+            msg = f"{acct_id} at {pct:.0f}% of daily budget — slow down"
+            insert_mcp_warning(conn, key, None, "budget_80pct", msg, "red")
+            emitted += 1
+    except Exception as e:
+        print(f"[scanner] mcp_warnings budget_80pct error: {e}", file=sys.stderr)
+
+    # Rule 4 — FLOUNDERING_LIVE: any floundering waste_event in last 24h
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT project FROM waste_events "
+            "WHERE pattern_type = 'floundering' AND detected_at >= ?",
+            (one_day,),
+        ).fetchall()
+        for r in rows:
+            proj = r["project"] if hasattr(r, "keys") else r[0]
+            if not proj or _warning_exists_recent(conn, proj, "floundering_live"):
+                continue
+            msg = (
+                f"{proj} floundering detected today — "
+                "Claude is retrying the same tool. Check session."
+            )
+            insert_mcp_warning(conn, proj, None, "floundering_live", msg, "red")
+            emitted += 1
+    except Exception as e:
+        print(f"[scanner] mcp_warnings floundering_live error: {e}", file=sys.stderr)
+
+    if emitted:
+        print(f"[scanner] MCP warnings: {emitted} new", file=sys.stderr)
+    return emitted
+
+
 def start_periodic_scan(interval_seconds=300):
     def _run():
         while True:
             try:
                 scan_all()
                 generate_insights()
+                # v2-F5: refresh waste detection, then emit MCP warnings so
+                # claudash_get_warnings sees current state on each 5-min cycle.
+                try:
+                    from waste_patterns import detect_all as _detect_all
+                    conn = get_conn()
+                    try:
+                        _detect_all(conn)
+                        generate_mcp_warnings(conn)
+                    finally:
+                        conn.close()
+                except Exception as _e:
+                    print(f"[scanner] periodic waste/warning error: {_e}", file=sys.stderr)
             except Exception as e:
                 print(f"[scanner] Periodic scan error: {e}", file=sys.stderr)
             time.sleep(interval_seconds)
