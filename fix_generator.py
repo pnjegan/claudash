@@ -202,20 +202,78 @@ def _err(msg, **extra):
 
 # ─── CLAUDE.md discovery ─────────────────────────────────────────
 
+# DB project name → actual filesystem dir under ~/projects/. Used when the
+# DB-normalized name has no fuzzy path to the real source tree (e.g.
+# "Claudash" lives in jk-usage-dashboard/, an unrelated identifier).
+_PROJECT_ALIASES = {
+    "claudash": "jk-usage-dashboard",
+}
+
+# Directory-name substrings that disqualify a candidate during fuzzy search.
+# Backups and archives shadow live source; node_modules and docs subtrees
+# are never the right place for project-level CLAUDE.md.
+_EXCLUDE_TOKENS = ("backup", "node_modules", "archive")
+
+
+def _excluded(name):
+    n = name.lower()
+    return any(tok in n for tok in _EXCLUDE_TOKENS)
+
+
+def _normalize(s):
+    """Lowercase + strip non-alphanumerics. Lets 'CareerOps' match
+    'career-ops', 'career_ops', etc."""
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+def _check_dir(directory):
+    """Return (path, contents) for the first CLAUDE.md found in
+    directory/.claude/ then directory/, or (None, '') if neither exists."""
+    if not directory or not os.path.isdir(directory):
+        return None, ""
+    for sub in (os.path.join(".claude", "CLAUDE.md"), "CLAUDE.md"):
+        candidate = os.path.join(directory, sub)
+        if os.path.isfile(candidate):
+            return _safe_read(candidate)
+    return None, ""
+
+
 def find_claude_md(project, conn=None):
     """Return (path, contents) or (None, '') if nothing found. Never raises.
-    Discovery order:
-      1. ~/.claude/projects/ — any dir case-insensitively matching project,
-         then check for CLAUDE.md in that dir
-      2. ~/projects/<project_lower>/CLAUDE.md
-      3. ~/projects/<project>/.claude/CLAUDE.md
+
+    DB project names ('Brainworks', 'Tidify', 'WikiLoop', 'CareerOps', ...)
+    rarely match the on-disk dir verbatim — projects get versioned
+    (Tidify15), live under non-projects roots (~/wikiloop), use kebab-case
+    (career-ops), or get renamed entirely (Claudash → jk-usage-dashboard).
+
+    Search order (first hit wins):
+      0. _PROJECT_ALIASES override (~/projects/<aliased>/...)
+      1. ~/.claude/projects/<encoded>/CLAUDE.md  (legacy; rarely populated)
+      2-4. Exact ~/projects/<project>/ and lowercase variant
+      5-6. Versioned glob ~/projects/<project>*/, descending (picks Tidify15)
+      7. HOME walk depth 2 with normalized substring matching
+         (catches WikiLoop→~/wikiloop, Knowl→~/newprojects/knowl,
+          CareerOps→~/resumestiffs/career-ops)
+      8. Global ~/.claude/CLAUDE.md fallback
     """
     if not project:
         return None, ""
     home = os.path.expanduser("~")
+    projects_dir = os.path.join(home, "projects")
     proj_lower = project.lower()
+    proj_norm = _normalize(project)
 
-    # (1) walk ~/.claude/projects/
+    # (0) Explicit alias — overrides the rest. Used when DB name and
+    # filesystem name are unrelated tokens.
+    aliased = _PROJECT_ALIASES.get(proj_lower)
+    if aliased:
+        path, content = _check_dir(os.path.join(projects_dir, aliased))
+        if path:
+            return path, content
+
+    # (1) Legacy: ~/.claude/projects/<encoded>/CLAUDE.md. These dirs hold
+    # JSONL transcripts; CLAUDE.md is almost never inside them, but the
+    # check is cheap and covers exotic setups.
     claude_projects = os.path.join(home, ".claude", "projects")
     if os.path.isdir(claude_projects):
         try:
@@ -227,20 +285,74 @@ def find_claude_md(project, conn=None):
         except OSError:
             pass
 
-    # (2) ~/projects/<project_lower>/CLAUDE.md
-    p2 = os.path.join(home, "projects", proj_lower, "CLAUDE.md")
-    if os.path.isfile(p2):
-        return _safe_read(p2)
+    # (2/3) Exact match under ~/projects/
+    for sub in (os.path.join(".claude", "CLAUDE.md"), "CLAUDE.md"):
+        p = os.path.join(projects_dir, project, sub)
+        if os.path.isfile(p):
+            return _safe_read(p)
 
-    # (3) ~/projects/<project>/.claude/CLAUDE.md
-    p3 = os.path.join(home, "projects", project, ".claude", "CLAUDE.md")
-    if os.path.isfile(p3):
-        return _safe_read(p3)
+    # (4) Lowercase exact
+    if proj_lower != project:
+        for sub in (os.path.join(".claude", "CLAUDE.md"), "CLAUDE.md"):
+            p = os.path.join(projects_dir, proj_lower, sub)
+            if os.path.isfile(p):
+                return _safe_read(p)
 
-    # also try exact-case alternate
-    p4 = os.path.join(home, "projects", project, "CLAUDE.md")
-    if os.path.isfile(p4):
-        return _safe_read(p4)
+    # (5/6) Versioned/prefix glob under ~/projects/. Descending sort picks
+    # Tidify15 over Tidify14 over Tidify12.
+    if os.path.isdir(projects_dir):
+        try:
+            entries = os.listdir(projects_dir)
+        except OSError:
+            entries = []
+        for prefix in (project, proj_lower):
+            matches = sorted(
+                (d for d in entries
+                 if d.lower().startswith(prefix.lower()) and not _excluded(d)),
+                reverse=True,
+            )
+            for d in matches:
+                path, content = _check_dir(os.path.join(projects_dir, d))
+                if path:
+                    return path, content
+
+    # (7) HOME walk, depth 2, normalized substring match. Skips dotdirs,
+    # excluded tokens, and the heavyweight ~/.claude tree (already handled).
+    try:
+        top_entries = os.listdir(home)
+    except OSError:
+        top_entries = []
+    for entry in top_entries:
+        if entry.startswith(".") or _excluded(entry):
+            continue
+        entry_path = os.path.join(home, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        # depth 1
+        if proj_norm and proj_norm in _normalize(entry):
+            path, content = _check_dir(entry_path)
+            if path:
+                return path, content
+        # depth 2
+        try:
+            sub_entries = os.listdir(entry_path)
+        except OSError:
+            continue
+        for sub_entry in sub_entries:
+            if sub_entry.startswith(".") or _excluded(sub_entry):
+                continue
+            sub_path = os.path.join(entry_path, sub_entry)
+            if not os.path.isdir(sub_path):
+                continue
+            if proj_norm and proj_norm in _normalize(sub_entry):
+                path, content = _check_dir(sub_path)
+                if path:
+                    return path, content
+
+    # (8) Global fallback
+    global_md = os.path.join(home, ".claude", "CLAUDE.md")
+    if os.path.isfile(global_md):
+        return _safe_read(global_md)
 
     return None, ""
 
