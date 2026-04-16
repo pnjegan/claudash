@@ -1077,26 +1077,13 @@ def _setup_fix_provider(force_anthropic=False):
         print()
         print("  Claudash Fix Generator \u2014 Provider Setup")
         print("  " + "\u2500" * 40)
-        print("  Each fix generation calls an LLM to write a CLAUDE.md rule.")
-        print("  Choose your provider:")
+        print("  Claudash uses Claude to fix Claude Code waste.")
+        print("  All providers below run Anthropic models only.")
         print()
-        print("  [1] Anthropic API (direct)")
-        print("      Cost: ~$0.003 per fix (~$0.30 per 100 fixes)")
-        print("      Setup: API key from console.anthropic.com")
-        print("      No new account needed if you already use Claude.")
-        print()
-        print("  [2] AWS Bedrock")
-        print("      Cost: Bedrock rates (check your AWS console)")
-        print("      Setup: ~/.aws/credentials + bedrock:InvokeModel permission")
-        print("      Good choice if you have existing AWS spend.")
-        print()
-        print("  [3] OpenAI-compatible endpoint")
-        print("      Cost: Depends on provider/model")
-        print("      Setup: Any OpenAI-compatible URL + optional API key")
-        print("      Works with: OpenRouter, Azure OpenAI, LM Studio, Ollama")
-        print()
+        print("  [1] Anthropic API direct    ~$0.006/fix  console.anthropic.com")
+        print("  [2] AWS Bedrock (Anthropic) ~$0.007/fix  requires ~/.aws/credentials")
+        print("  [3] OpenRouter (Anthropic)  ~$0.008/fix  free credits at openrouter.ai")
         print("  [4] Skip \u2014 I'll set this up later")
-        print("      Fix generation will be unavailable until configured.")
         print()
         try:
             choice = (input("  Enter choice [1-4]: ") or "").strip()
@@ -1114,7 +1101,7 @@ def _setup_fix_provider(force_anthropic=False):
         info = SUPPORTED_PROVIDERS["anthropic"]
         print()
         print(f"  Provider saved: {info['label']}")
-        print(f"  Cost note: {info['cost_note']}")
+        print(f"  Cost: {info['cost_per_fix']} per fix")
         print("  Test with: claudash fix generate <waste_event_id>")
         print()
 
@@ -1131,30 +1118,30 @@ def _setup_fix_provider(force_anthropic=False):
         info = SUPPORTED_PROVIDERS["bedrock"]
         print()
         print(f"  Provider saved: {info['label']} (region: {region})")
-        print(f"  Cost note: {info['cost_note']}")
+        print(f"  Cost: {info['cost_per_fix']} per fix")
         if not boto3_ok:
             print("  NOTE: boto3 is not installed. Install with: pip install boto3")
         print("  Test with: claudash fix generate <waste_event_id>")
         print()
 
     elif choice == "3":
-        url = _prompt_line("  OpenAI-compatible URL (e.g. https://openrouter.ai/api/v1): ")
-        if not url:
-            print("  URL is required. Cancelled.")
+        api_key = _prompt_secret("  Enter OpenRouter API key (starts with sk-or-): ")
+        if not api_key:
+            print("  API key is required. Cancelled.")
             conn.close()
             sys.exit(1)
-        api_key = _prompt_secret("  API key (optional — blank for local servers): ")
-        model = _prompt_line("  Model name (e.g. anthropic/claude-sonnet-4.5, blank to configure later): ")
-        set_setting(conn, "fix_provider", "openai_compat")
-        set_setting(conn, "openai_compat_url", url)
-        set_setting(conn, "openai_compat_key", api_key)
-        set_setting(conn, "openai_compat_model", model)
-        info = SUPPORTED_PROVIDERS["openai_compat"]
+        info = SUPPORTED_PROVIDERS["openrouter"]
+        model = _prompt_line(
+            f"  Model name [{info['default_model']}]: ",
+            default=info["default_model"],
+        )
+        set_setting(conn, "fix_provider", "openrouter")
+        set_setting(conn, "openrouter_api_key", api_key)
+        set_setting(conn, "openrouter_model", model)
         print()
         print(f"  Provider saved: {info['label']}")
-        print(f"  URL: {url}")
-        print(f"  Model: {model or '(unspecified — configure via settings before first generation)'}")
-        print(f"  Cost note: {info['cost_note']}")
+        print(f"  Model: {model}")
+        print(f"  Cost: {info['cost_per_fix']} per fix")
         print("  Test with: claudash fix generate <waste_event_id>")
         print()
 

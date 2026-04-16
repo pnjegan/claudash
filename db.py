@@ -370,14 +370,13 @@ def init_db():
 
     # v2-F4 Phase 1: seed agentic-loop settings (never overwrite existing).
     # Multi-provider support: fix_provider picks one of anthropic/bedrock/
-    # openai_compat; provider-specific creds are stored alongside.
+    # openrouter — all three run Anthropic models.
     for _k, _v in (
         ("fix_provider", "anthropic"),
         ("anthropic_api_key", ""),
         ("aws_region", "us-east-1"),
-        ("openai_compat_url", ""),
-        ("openai_compat_key", ""),
-        ("openai_compat_model", ""),
+        ("openrouter_api_key", ""),
+        ("openrouter_model", "anthropic/claude-sonnet-4-5"),
         ("fix_autogen_enabled", "0"),
         ("fix_autogen_model", "claude-sonnet-4-5"),
     ):
@@ -385,6 +384,55 @@ def init_db():
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
             (_k, _v),
         )
+
+    # v2.0.1 migration: the legacy openai_compat provider was removed.
+    # Users who configured OpenRouter via the old openai_compat path get
+    # migrated cleanly; anyone pointing at Groq/Azure/Ollama gets a reset
+    # with a console warning to re-run the wizard.
+    legacy = conn.execute(
+        "SELECT value FROM settings WHERE key = 'fix_provider'"
+    ).fetchone()
+    if legacy and legacy["value"] == "openai_compat":
+        url_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'openai_compat_url'"
+        ).fetchone()
+        key_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'openai_compat_key'"
+        ).fetchone()
+        model_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'openai_compat_model'"
+        ).fetchone()
+        url = (url_row["value"] if url_row else "") or ""
+        api_key = (key_row["value"] if key_row else "") or ""
+        model = (model_row["value"] if model_row else "") or ""
+        if "openrouter.ai" in url.lower() and api_key:
+            conn.execute(
+                "UPDATE settings SET value = ? WHERE key = 'fix_provider'",
+                ("openrouter",),
+            )
+            conn.execute(
+                "UPDATE settings SET value = ? WHERE key = 'openrouter_api_key'",
+                (api_key,),
+            )
+            if model:
+                conn.execute(
+                    "UPDATE settings SET value = ? WHERE key = 'openrouter_model'",
+                    (model,),
+                )
+            print(
+                "  [claudash] Migrated openai_compat → openrouter (URL matched openrouter.ai).",
+                flush=True,
+            )
+        else:
+            conn.execute(
+                "UPDATE settings SET value = '' WHERE key = 'fix_provider'"
+            )
+            print(
+                "  [claudash] v2.0.1 removed the generic OpenAI-compatible provider. "
+                "Non-Anthropic endpoints (Groq/Azure/Ollama) are no longer supported.\n"
+                "  Run: claudash keys --set-provider  to pick Anthropic / Bedrock / OpenRouter.",
+                flush=True,
+            )
 
     # Mark one-time account migration as done
     conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('account_migration_done', '1')")

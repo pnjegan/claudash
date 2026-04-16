@@ -1,14 +1,12 @@
-"""Claudash v2-F4 — agentic fix generator (multi-provider).
+"""Claudash v2-F4 — agentic fix generator (Anthropic models only).
 
 Given a waste_event row, produces a targeted CLAUDE.md rule using a
-pattern-specific prompt template. Dispatches to one of three back-end
-providers chosen by the user:
+pattern-specific prompt template. Claudash uses Claude to fix Claude
+Code waste — all three transports below run Anthropic models:
 
-  - anthropic       direct Anthropic Messages API (urllib, stdlib only)
-  - bedrock         AWS Bedrock Runtime (optional boto3 dependency)
-  - openai_compat   any OpenAI-compatible /chat/completions endpoint
-                    (urllib, stdlib only) — OpenRouter, Azure OpenAI,
-                    LM Studio, Ollama, vLLM, etc.
+  - anthropic   direct Anthropic Messages API (urllib, stdlib only)
+  - bedrock     AWS Bedrock Runtime, Anthropic models (optional boto3)
+  - openrouter  OpenRouter routed to anthropic/* models (urllib, stdlib)
 
 All public entry points return a dict — they never raise. Error cases
 set the "error" field; callers inspect it.
@@ -29,7 +27,9 @@ from db import get_conn, get_setting
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-4-5"
-DEFAULT_BEDROCK_MODEL = "anthropic.claude-sonnet-4-5-20251001"
+DEFAULT_BEDROCK_MODEL = "anthropic.claude-sonnet-4-20250514-v1:0"
+DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31"
 MAX_TOKENS = 1024
 HTTP_TIMEOUT = 30  # seconds
@@ -40,33 +40,34 @@ HTTP_TIMEOUT = 30  # seconds
 SUPPORTED_PROVIDERS = {
     "anthropic": {
         "label": "Anthropic API (direct)",
-        "model_default": DEFAULT_MODEL,
-        "requires": "anthropic_api_key",
-        "cost_note": "~$0.003 per fix generation (~$0.30/100 fixes)",
-        "setup": "Get key at console.anthropic.com \u2192 API Keys",
+        "description": "Direct Anthropic API \u2014 claude-sonnet-4-5",
+        "default_model": DEFAULT_MODEL,
+        "cost_per_fix": "~$0.006",
+        "setup": "Get key at console.anthropic.com",
     },
     "bedrock": {
-        "label": "AWS Bedrock",
-        "model_default": DEFAULT_BEDROCK_MODEL,
-        "requires": "aws_region",
-        "cost_note": "Bedrock pricing varies by region. Check AWS console.",
-        "setup": "Needs ~/.aws/credentials + bedrock:InvokeModel IAM permission",
+        "label": "AWS Bedrock (Anthropic)",
+        "description": "Claude via AWS Bedrock \u2014 HIPAA-eligible",
+        "default_model": DEFAULT_BEDROCK_MODEL,
+        "cost_per_fix": "~$0.007",
+        "setup": "Configure ~/.aws/credentials",
     },
-    "openai_compat": {
-        "label": "OpenAI-compatible endpoint (OpenRouter, Azure, local)",
-        "model_default": "",
-        "requires": "openai_compat_url,openai_compat_key",
-        "cost_note": "Depends on your provider/model choice",
-        "setup": "Any OpenAI-compatible endpoint works (OpenRouter, Azure, LM Studio)",
+    "openrouter": {
+        "label": "OpenRouter (Anthropic models)",
+        "description": "Claude via OpenRouter \u2014 free credits available",
+        "default_model": DEFAULT_OPENROUTER_MODEL,
+        "cost_per_fix": "~$0.008",
+        "setup": "Get key at openrouter.ai \u2014 use free credits first",
     },
 }
 
 SYSTEM_PROMPT = (
-    "You are a Claude Code optimization expert. Your job is to write a "
-    "single targeted CLAUDE.md rule that will reduce a specific observed "
-    "waste pattern. You will receive telemetry from Claudash (a dashboard "
-    "that scans Claude Code JSONL transcripts) and the project's current "
-    "CLAUDE.md content.\n"
+    "You are Claude, analyzing Claude Code session data to generate "
+    "improvements for Claude Code users.\n"
+    "Your job is to write a single targeted CLAUDE.md rule that will "
+    "reduce a specific observed waste pattern. You will receive "
+    "telemetry from Claudash (a dashboard that scans Claude Code JSONL "
+    "transcripts) and the project's current CLAUDE.md content.\n"
     "Respond ONLY with valid JSON matching the schema provided.\n"
     "Do not explain outside the JSON. Rules must be concrete and "
     "actionable. Avoid platitudes like \"be efficient\" or \"use cache\"."
@@ -473,61 +474,55 @@ def _call_bedrock(prompt, model, region):
     return text
 
 
-def _call_openai_compat(prompt, model, url, api_key):
-    """Any OpenAI-compatible Chat Completions endpoint. Works for
-    OpenRouter, Azure OpenAI, LM Studio, Ollama (openai compat), vLLM."""
-    if not url:
-        raise ValueError("OpenAI-compatible URL not set — run: claudash keys --set-provider")
-    # Accept both "…/v1" base and full "…/chat/completions" URL
-    u = url.rstrip("/")
-    if not u.endswith("/chat/completions"):
-        u = u + "/chat/completions"
+def _call_openrouter(prompt, model, api_key):
+    """OpenRouter Chat Completions API, restricted to Anthropic models.
+    The URL is fixed (https://openrouter.ai/api/v1/chat/completions)."""
+    if not api_key:
+        raise ValueError("OpenRouter API key not set — run: claudash keys --set-provider")
 
     payload = {
+        "model": model or DEFAULT_OPENROUTER_MODEL,
         "max_tokens": MAX_TOKENS,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
     }
-    if model:
-        payload["model"] = model
 
     body = json.dumps(payload).encode("utf-8")
-    req = Request(u, data=body, method="POST")
+    req = Request(OPENROUTER_URL, data=body, method="POST")
     req.add_header("content-type", "application/json")
-    if api_key:
-        req.add_header("authorization", f"Bearer {api_key}")
+    req.add_header("authorization", f"Bearer {api_key}")
     try:
         with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except HTTPError as e:
         if e.code == 401:
-            raise ValueError("Invalid OpenAI-compatible API key — run: claudash keys --set-provider")
+            raise ValueError("Invalid OpenRouter API key — run: claudash keys --set-provider")
         if e.code == 429:
-            raise ValueError("OpenAI-compatible endpoint rate limited — try again in 60 seconds")
+            raise ValueError("OpenRouter rate limited — try again in 60 seconds")
         if 500 <= e.code < 600:
-            raise ValueError(f"OpenAI-compatible API error {e.code}")
+            raise ValueError(f"OpenRouter API error {e.code}")
         try:
             err_body = e.read().decode("utf-8", errors="replace")[:200]
         except Exception:
             err_body = ""
-        raise ValueError(f"OpenAI-compatible API error {e.code}: {err_body}")
+        raise ValueError(f"OpenRouter API error {e.code}: {err_body}")
     except (URLError, OSError) as e:
         raise ValueError(f"Network error: {e}")
     try:
         resp_dict = json.loads(raw)
     except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON from OpenAI-compatible endpoint: {raw[:200]}")
+        raise ValueError(f"Invalid JSON from OpenRouter: {raw[:200]}")
     choices = resp_dict.get("choices") if isinstance(resp_dict, dict) else None
     if not choices or not isinstance(choices, list):
-        raise ValueError("No choices in OpenAI-compatible response")
+        raise ValueError("No choices in OpenRouter response")
     msg = choices[0].get("message") if isinstance(choices[0], dict) else None
     if not isinstance(msg, dict):
-        raise ValueError("Malformed choice in OpenAI-compatible response")
+        raise ValueError("Malformed choice in OpenRouter response")
     text = msg.get("content") or ""
     if not text:
-        raise ValueError("Empty content in OpenAI-compatible response")
+        raise ValueError("Empty content in OpenRouter response")
     return text
 
 
@@ -543,13 +538,12 @@ def _call_provider(prompt, conn):
         model = get_setting(conn, "fix_autogen_model") or DEFAULT_BEDROCK_MODEL
         region = (get_setting(conn, "aws_region") or "us-east-1").strip()
         return _call_bedrock(prompt, model, region), model
-    if provider == "openai_compat":
-        url = (get_setting(conn, "openai_compat_url") or "").strip()
-        key = (get_setting(conn, "openai_compat_key") or "").strip()
-        # Provider-specific model slot wins; falls back to fix_autogen_model
-        model = (get_setting(conn, "openai_compat_model")
-                 or get_setting(conn, "fix_autogen_model") or "").strip()
-        return _call_openai_compat(prompt, model, url, key), (model or "(unspecified)")
+    if provider == "openrouter":
+        key = (get_setting(conn, "openrouter_api_key") or "").strip()
+        model = (get_setting(conn, "openrouter_model")
+                 or get_setting(conn, "fix_autogen_model")
+                 or DEFAULT_OPENROUTER_MODEL).strip()
+        return _call_openrouter(prompt, model, key), model
     raise ValueError(
         f"Unknown fix_provider '{provider}' — run: claudash keys --set-provider"
     )

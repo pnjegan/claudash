@@ -70,7 +70,7 @@ On April 16, 2026, version 2.0 was designed and built in a single working sessio
 - **F1**: Session lifecycle event tracking — 280 events (135 compact, 145 subagent_spawn), all with context percentage at time of event
 - **F2**: Context rot visualization — inline SVG chart per project showing output/input ratio degrading with session depth
 - **F3**: Bad compact detector — regex-based detection of post-compact context loss signals
-- **F4**: Agentic fix loop Phase 1 — LLM-driven CLAUDE.md rule generation with 3-provider support (Anthropic, AWS Bedrock, OpenAI-compatible including Groq)
+- **F4**: Agentic fix loop Phase 1 — LLM-driven CLAUDE.md rule generation with 3-provider support (Anthropic direct, AWS Bedrock, OpenRouter — all Anthropic models, restricted in v2.0.1)
 - **F5**: Bidirectional MCP — 10 tools total (5 read + 5 write), warning queue, Claude Code can now report its own waste
 - **F6**: Streaming cost meter — SSE endpoint + Claude Code hooks, live cost ticker in the dashboard, real-time floundering detection
 - **F7**: Per-project autoCompactThreshold recommendations — data-driven settings.json snippets, copyable from the dashboard
@@ -94,7 +94,7 @@ Detect → Generate → Approve + Apply → Measure
 ```
 
 1. **Detect**: The waste detector runs after every scan and classifies sessions into four pattern types: repeated_reads, floundering, deep_no_compact, cost_outlier.
-2. **Generate**: The fix generator calls an LLM (Anthropic, Bedrock, or OpenAI-compatible) with a pattern-specific prompt template and produces a concrete fix — a CLAUDE.md block, a settings.json change, or an architectural recommendation.
+2. **Generate**: The fix generator calls Claude (via Anthropic direct, AWS Bedrock, or OpenRouter — all Anthropic models) with a pattern-specific prompt template and produces a concrete fix — a CLAUDE.md block, a settings.json change, or an architectural recommendation.
 3. **Approve + Apply**: Currently a CLI-only workflow. The user runs `claudash fix add` to create a fix interactively, or `claudash fix generate` to auto-generate one. There is no browser UI for reviewing or applying fixes yet.
 4. **Measure**: After applying a fix, the user runs `claudash measure` to capture a baseline, then runs it again later to compute the delta — did token usage drop? Did cost per session improve?
 
@@ -327,10 +327,11 @@ The database lives at `data/usage.db`. It uses SQLite with WAL mode for concurre
 **settings** — Key-value store for configuration. Keys include:
 - `dashboard_key`: HMAC key for API authentication (auto-generated on first init)
 - `sync_token`: for future VPS sync feature
-- `fix_provider`: LLM provider for fix generation (anthropic/bedrock/openai_compat)
-- `fix_model`: model name to use
-- `fix_api_key`: provider API key (stored in DB — security concern noted in §18)
-- `fix_endpoint`: base URL for OpenAI-compatible providers
+- `fix_provider`: LLM provider for fix generation (anthropic/bedrock/openrouter — all Anthropic models)
+- `anthropic_api_key`: Anthropic direct key (when `fix_provider=anthropic`)
+- `aws_region`: Bedrock region (when `fix_provider=bedrock`)
+- `openrouter_api_key` / `openrouter_model`: OpenRouter credentials
+- `fix_autogen_model`: per-provider model override (falls back to defaults)
 
 **alerts** — Triggered alert records. Not actively used in the UI as of v1.0.15.
 
@@ -774,7 +775,7 @@ def _call_bedrock(prompt, model, region):
     # ...
 ```
 
-**`_call_openai_compat(prompt, model, api_key, endpoint)`**: Generic OpenAI-compatible endpoint. Works with any provider that implements the OpenAI chat completions API — Groq, Together AI, local Ollama, etc.
+**`_call_openrouter(prompt, model, api_key)`**: OpenRouter Chat Completions API restricted to Anthropic models. The URL is fixed (`https://openrouter.ai/api/v1/chat/completions`); the user only supplies a key. Replaced the generic `_call_openai_compat` in v2.0.1.
 
 #### `generate_fix(fix_id)`
 
@@ -1535,7 +1536,7 @@ The `subagent_spawn` tracking was motivated by noticing that some projects' cost
 
 `fix_generator.py` created. The 6 prompt templates. Three provider functions. `generate_fix()` main entry.
 
-The multi-provider design was added because the author uses both Anthropic direct API and AWS Bedrock, and wanted to use whichever was currently configured. The lazy `boto3` import was specifically to avoid breaking users who don't have boto3 installed.
+The multi-provider design was added because the author uses both Anthropic direct API and AWS Bedrock, and wanted to use whichever was currently configured. The lazy `boto3` import was specifically to avoid breaking users who don't have boto3 installed. (v2.0.1 narrowed the third slot from "any OpenAI-compatible endpoint" to "OpenRouter routed to Anthropic models" — Claudash analyzes Claude transcripts; Claude is the right model to write CLAUDE.md rules.)
 
 ### Session 10 — v2 F1: Lifecycle Events Scan
 
@@ -1691,7 +1692,7 @@ This section is intentionally honest. As of v1.0.15, these are the known gaps.
 
 **Session keys stored in plaintext**: `claude_ai_accounts.session_key` stores browser session cookies in SQLite. The database has 0600 permissions which limits exposure, but any process running as root (which is the case in the development environment) can read the database.
 
-**API keys stored in plaintext**: `settings.fix_api_key` stores the Anthropic/Bedrock/OpenAI API key in plaintext in the settings table. Same 0600 mitigation, same caveat.
+**API keys stored in plaintext**: `settings.anthropic_api_key` and `settings.openrouter_api_key` store provider keys in plaintext in the settings table. Same 0600 mitigation, same caveat. (Bedrock uses `~/.aws/credentials` instead of an in-DB key.)
 
 **No HTTPS**: The dashboard server runs on plain HTTP. All traffic, including the `X-Dashboard-Key` header, is transmitted in cleartext on localhost. This is acceptable for localhost-only use but would be a problem if the server were ever bound to a non-loopback interface.
 
@@ -1741,7 +1742,7 @@ The current implementation does not produce this structured output. `generate_fi
 | `analyzer.py` | ~380 | Metrics computation, context rot, compaction advisor |
 | `waste_patterns.py` | ~280 | Four waste detectors + bad compact detector |
 | `fix_tracker.py` | ~220 | Fix lifecycle, baseline, delta, verdict |
-| `fix_generator.py` | ~180 | LLM-driven fix generation, 3 providers |
+| `fix_generator.py` | ~180 | LLM-driven fix generation, 3 Anthropic-only providers |
 | `insights.py` | ~320 | 14 insight rules |
 | `server.py` | ~600 | HTTP server, SSE, hooks endpoint |
 | `mcp_server.py` | ~350 | MCP stdio server, 10 tools |
@@ -1770,10 +1771,11 @@ hooks/post_tool_use.sh        — Post-tool hook (install to settings.json)
 Settings keys in `settings` table:
 - `dashboard_key` — HMAC auth key (auto-generated)
 - `sync_token` — Future sync feature (currently unused)
-- `fix_provider` — `anthropic` | `bedrock` | `openai_compat`
-- `fix_model` — Model name for fix generation
-- `fix_api_key` — Provider API key
-- `fix_endpoint` — Base URL (for openai_compat providers)
+- `fix_provider` — `anthropic` | `bedrock` | `openrouter` (all Anthropic models)
+- `anthropic_api_key` — Anthropic direct API key
+- `aws_region` — Bedrock region
+- `openrouter_api_key` / `openrouter_model` — OpenRouter credentials
+- `fix_autogen_model` — Per-provider model override
 
 ---
 
@@ -2050,26 +2052,28 @@ This is the concrete feedback loop that Claudash was designed to enable: observe
 
 ## Appendix K: Which LLM Provider to Use for Fix Generation
 
-Three providers are supported. For most users, Groq is the best starting point:
+Claudash uses Claude to fix Claude Code waste. All three supported
+providers run Anthropic models only — no Groq, no Llama, no non-Anthropic
+inference. The philosophical choice (v2.0.1): the tool understands Claude
+Code transcripts; Claude is the right model to analyze them.
 
-**Groq (recommended for new users)**
-- Free tier: generous limits, enough for hundreds of fix generations
-- Model: `llama-3.3-70b-versatile` — works well for CLAUDE.md rules
-- Setup: Get key at console.groq.com → choose OpenAI-compatible endpoint
-- URL: `https://api.groq.com/openai/v1`
-- Command: `claudash keys --set-provider` → choose [3] → enter Groq URL + key
-
-**AWS Bedrock (recommended if you have existing AWS spend)**
-- Cost: Bedrock pricing (check console.aws.amazon.com/bedrock)
-- Auth: Uses `~/.aws/credentials` — no new key needed if AWS is configured
-- Model: `anthropic.claude-sonnet-4-5-20251001`
-- Command: `claudash keys --set-provider` → choose [2] → enter region
-
-**Anthropic API (direct)**
-- Cost: ~$0.003 per fix generation (~$0.30 per 100 fixes)
+**Anthropic API (direct) — the default**
+- Cost: ~$0.006 per fix
 - Model: `claude-sonnet-4-5`
 - Key: Get from console.anthropic.com → API Keys
 - Command: `claudash keys --set-provider` → choose [1] → enter key
+
+**AWS Bedrock (Anthropic) — for AWS/HIPAA teams**
+- Cost: ~$0.007 per fix (varies by region — check console.aws.amazon.com/bedrock)
+- Auth: `~/.aws/credentials` — no new key if AWS is already configured
+- Model: `anthropic.claude-sonnet-4-20250514-v1:0`
+- Command: `claudash keys --set-provider` → choose [2] → enter region
+
+**OpenRouter (Anthropic) — for users who want to use free credits first**
+- Cost: ~$0.008 per fix
+- Model: `anthropic/claude-sonnet-4-5`
+- Key: Get at openrouter.ai — the free tier covers dozens of fixes
+- Command: `claudash keys --set-provider` → choose [3] → enter key
 
 **Privacy note**: Fix generation sends to the LLM:
 - Pattern type (e.g. "repeated_reads")

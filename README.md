@@ -257,31 +257,33 @@ No other Claude Code tracker closes this loop. Most tools tell you what happened
 
 ## Fix Generator
 
-Claudash can generate a targeted CLAUDE.md rule for any waste pattern
-it detects, via the LLM provider of your choice.
+Claudash uses Claude to fix Claude Code waste. It generates a targeted
+CLAUDE.md rule for any waste pattern it detects — all three supported
+providers run Anthropic models only.
 
 ```bash
 python3 cli.py keys --set-provider          # one-time provider setup
 python3 cli.py fix generate <waste_event_id>  # print a proposed rule, save as 'proposed'
 ```
 
-Supported providers:
+Supported providers (Anthropic models only):
 
-- **Anthropic API (direct)** — stdlib-only, no new dependencies
-- **AWS Bedrock** — requires `boto3` (optional `pip install boto3`)
-- **OpenAI-compatible endpoint** — stdlib-only; works with OpenRouter,
-  Azure OpenAI, LM Studio, Ollama, vLLM, or any other `/chat/completions`
-  endpoint
+- **Anthropic API (direct)** — `claude-sonnet-4-5`. Default. Stdlib-only.
+- **AWS Bedrock (Anthropic)** — `anthropic.claude-sonnet-4-20250514-v1:0`.
+  For teams with existing AWS spend / HIPAA requirements. Needs
+  `boto3` (optional `pip install boto3`).
+- **OpenRouter (Anthropic)** — `anthropic/claude-sonnet-4-5` via
+  OpenRouter. For users who want to use free credits first. Stdlib-only.
 
 ### Cost transparency
 
 Fix generation requires an LLM call (~1,100 tokens per fix on Sonnet).
 Estimated costs:
 
-- **Anthropic direct**: ~$0.003 per fix (~$0.30 per 100 fixes)
-- **AWS Bedrock**: varies by region — check your
-  [Bedrock console](https://console.aws.amazon.com/bedrock)
-- **OpenRouter / other**: depends on the model you pick
+- **Anthropic direct**: ~$0.006 per fix
+- **AWS Bedrock (Anthropic)**: ~$0.007 per fix — varies by region,
+  check your [Bedrock console](https://console.aws.amazon.com/bedrock)
+- **OpenRouter (Anthropic)**: ~$0.008 per fix
 
 You control when fixes are generated — nothing calls the API
 automatically. Every generation is triggered by you explicitly via

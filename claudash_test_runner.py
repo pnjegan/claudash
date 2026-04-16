@@ -366,7 +366,7 @@ def test_v2_f4_fix_generator():
         "repeated_reads", "floundering", "deep_no_compact",
         "cost_outlier", "bad_compact", "rewind_heavy"
     ])
-    expected_providers = ["anthropic", "bedrock", "openai_compat"]
+    expected_providers = ["anthropic", "bedrock", "openrouter"]
 
     # Test 2: offline graceful
     try:
