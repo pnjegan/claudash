@@ -54,6 +54,213 @@ _server_start_time = time.time()
 _analysis_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis")
 
 
+# ─── v2-F6: streaming cost meter ────────────────────────────────
+#
+# In-memory live-session state, touched by POST /api/hooks/cost-event
+# and read by GET /api/stream/cost. Localhost-bound, no persistence —
+# this is a "taxi meter" display, not analytics. sessions are keyed
+# by (project, session_id) and auto-pruned after 120s of silence.
+
+_live_session_lock = threading.Lock()
+_live_sessions = {}          # {(project,session_id): entry_dict}
+_live_model_cache = {}       # {project: (model, cached_at)} — 60s TTL
+_live_account_cache = {}     # {project: (account_id, cached_at)} — 60s TTL
+_live_budget_cache = {}      # {account_id: (budget_pct, cached_at)} — 60s TTL
+_LIVE_SESSION_ACTIVE_WINDOW = 60    # seconds counted as "active" on the wire
+_LIVE_SESSION_PRUNE_WINDOW = 120    # drop entries older than this
+_LIVE_CACHE_TTL = 60
+_LIVE_FLOUNDER_THRESHOLD = 3        # same tool N times in a row → warning
+
+
+def _dominant_model_for_project(project):
+    """Return the most-frequent model for a project (60s cache), falling
+    back to claude-sonnet when the project is unseen."""
+    now = time.time()
+    cached = _live_model_cache.get(project)
+    if cached and now - cached[1] < _LIVE_CACHE_TTL:
+        return cached[0]
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT model FROM sessions WHERE project = ? "
+            "GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1",
+            (project,),
+        ).fetchone()
+    finally:
+        conn.close()
+    model = (row[0] if row else None) or "claude-sonnet"
+    _live_model_cache[project] = (model, now)
+    return model
+
+
+def _account_for_project(project):
+    """Return the account_id for a project (60s cache), '' when unknown."""
+    now = time.time()
+    cached = _live_account_cache.get(project)
+    if cached and now - cached[1] < _LIVE_CACHE_TTL:
+        return cached[0]
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT account FROM sessions WHERE project = ? "
+            "GROUP BY account ORDER BY COUNT(*) DESC LIMIT 1",
+            (project,),
+        ).fetchone()
+    finally:
+        conn.close()
+    acct = (row[0] if row else None) or ""
+    _live_account_cache[project] = (acct, now)
+    return acct
+
+
+def _budget_pct_for_account(account_id):
+    """Today's cost as % of account daily budget (0 when budget not set).
+    Cached 60s to avoid hitting analyzer.daily_budget_metrics on every
+    SSE tick."""
+    if not account_id:
+        return 0.0
+    now = time.time()
+    cached = _live_budget_cache.get(account_id)
+    if cached and now - cached[1] < _LIVE_CACHE_TTL:
+        return cached[0]
+    pct = 0.0
+    try:
+        from analyzer import daily_budget_metrics
+        conn = get_conn()
+        try:
+            dbm = daily_budget_metrics(conn, account_id)
+        finally:
+            conn.close()
+        info = (dbm or {}).get(account_id) or {}
+        if info.get("has_budget"):
+            pct = float(info.get("budget_pct") or 0)
+    except Exception:
+        pct = 0.0
+    _live_budget_cache[account_id] = (pct, now)
+    return pct
+
+
+def _estimate_cost_usd(project, tokens):
+    """Tokens × input-price for the project's dominant model. Use input
+    price only — output is harder to estimate from a hook."""
+    from config import MODEL_PRICING
+    model = _dominant_model_for_project(project)
+    pricing = MODEL_PRICING.get(model) or MODEL_PRICING.get("claude-sonnet") or {}
+    price_per_million = float(pricing.get("input") or 3.0)
+    return (tokens / 1_000_000.0) * price_per_million
+
+
+def _prune_and_update_live_session(project, session_id, tool_name,
+                                    cost_delta, count_delta, phase):
+    """Acquire the live-session lock, upsert the entry, prune stale
+    entries, return a snapshot of the touched entry. Also tracks the
+    consecutive-same-tool counter for floundering detection."""
+    now = time.time()
+    key = (project, session_id)
+    to_insert_warning = None  # populated if floundering threshold crossed
+
+    with _live_session_lock:
+        # Prune
+        stale = [k for k, v in _live_sessions.items()
+                 if now - v.get("last_event_at", 0) > _LIVE_SESSION_PRUNE_WINDOW]
+        for k in stale:
+            _live_sessions.pop(k, None)
+
+        entry = _live_sessions.get(key)
+        if entry is None:
+            entry = {
+                "project": project,
+                "session_id": session_id,
+                "running_cost_usd": 0.0,
+                "tool_count": 0,
+                "last_tool": tool_name,
+                "last_event_at": now,
+                "consecutive_same_tool": 0,
+                "last_tool_for_flounder": "",
+                "started_at": now,
+            }
+            _live_sessions[key] = entry
+
+        # Every event refreshes the keepalive + last tool.
+        entry["last_event_at"] = now
+        entry["last_tool"] = tool_name or entry.get("last_tool", "")
+
+        # Accumulate cost + count only on the post-phase event (pre and
+        # post fire for the same tool invocation; double-counting here
+        # would make the meter read ~2x actual).
+        if phase != "pre":
+            entry["running_cost_usd"] = entry.get("running_cost_usd", 0.0) + cost_delta
+            entry["tool_count"] = entry.get("tool_count", 0) + count_delta
+
+            # Floundering: same tool N times in a row
+            if tool_name and tool_name == entry.get("last_tool_for_flounder"):
+                entry["consecutive_same_tool"] = entry.get("consecutive_same_tool", 0) + 1
+            else:
+                entry["consecutive_same_tool"] = 1
+                entry["last_tool_for_flounder"] = tool_name or ""
+            if entry["consecutive_same_tool"] >= _LIVE_FLOUNDER_THRESHOLD:
+                to_insert_warning = {
+                    "project": project,
+                    "session_id": session_id,
+                    "tool_name": tool_name,
+                }
+                # Reset counter so we don't spam: one warning per streak
+                entry["consecutive_same_tool"] = 0
+
+        snapshot = dict(entry)
+
+    # Insert the warning OUTSIDE the live-session lock — DB work shouldn't
+    # block other cost events.
+    if to_insert_warning:
+        try:
+            from db import insert_mcp_warning
+            conn = get_conn()
+            try:
+                insert_mcp_warning(
+                    conn,
+                    to_insert_warning["project"],
+                    to_insert_warning["session_id"],
+                    "floundering_live",
+                    (f"{to_insert_warning['project']}: Claude retrying "
+                     f"{to_insert_warning['tool_name']} — possible floundering"),
+                    "red",
+                )
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[live] floundering insert error: {e}", file=sys.stderr)
+
+    return snapshot
+
+
+def get_active_sessions():
+    """Return a list of live-session snapshots touched within the last
+    _LIVE_SESSION_ACTIVE_WINDOW seconds, enriched with seconds_ago +
+    budget_pct for the SSE payload."""
+    now = time.time()
+    out = []
+    with _live_session_lock:
+        items = list(_live_sessions.values())
+    for entry in items:
+        age = now - entry.get("last_event_at", 0)
+        if age > _LIVE_SESSION_ACTIVE_WINDOW:
+            continue
+        acct = _account_for_project(entry.get("project", ""))
+        out.append({
+            "project": entry.get("project", ""),
+            "session_id": entry.get("session_id", ""),
+            "running_cost_usd": round(entry.get("running_cost_usd", 0.0), 6),
+            "tool_count": int(entry.get("tool_count", 0)),
+            "last_tool": entry.get("last_tool", ""),
+            "seconds_ago": int(age),
+            "budget_pct": round(_budget_pct_for_account(acct), 1),
+            "account": acct,
+        })
+    # Newest-activity first
+    out.sort(key=lambda s: s["seconds_ago"])
+    return out
+
+
 def _cache_get(account):
     with _data_cache_lock:
         entry = _data_cache.get(account)
@@ -298,6 +505,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 conn.close()
             self._serve_json(data)
 
+        elif path == "/api/stream/cost":
+            # v2-F6: Server-Sent Events stream of live cost-meter data.
+            # Localhost-bound, no auth (EventSource cannot send custom
+            # headers; 127.0.0.1 binding is the security boundary).
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+                self.end_headers()
+
+                # Each response lives at most 60s; EventSource auto-reconnects.
+                # If the meter stays empty for 10s, bail early to free the thread.
+                deadline = time.time() + 60
+                try:
+                    while time.time() < deadline:
+                        sessions = get_active_sessions()
+                        payload = json.dumps({
+                            "sessions": sessions,
+                            "timestamp": int(time.time()),
+                        })
+                        self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                        if not sessions:
+                            deadline = min(deadline, time.time() + 10)
+                        time.sleep(2)
+                except (BrokenPipeError, ConnectionResetError):
+                    # Client closed — normal for EventSource reconnects.
+                    return
+            except Exception as e:
+                # Headers may already be sent — best we can do is log.
+                print(f"[sse] cost-stream error: {e}", file=sys.stderr)
+                return
+
         elif path == "/api/bad-compacts":
             project = params.get("project", [None])[0]
             days_raw = params.get("days", ["30"])[0]
@@ -380,11 +623,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # /api/claude-ai/sync keeps its existing X-Sync-Token check (for mac-sync.py).
+        # /api/hooks/cost-event is localhost-bound, no-auth (Claude Code hooks
+        #   are fire-and-forget shell scripts; demanding a key there is hostile).
         # All other write endpoints require X-Dashboard-Key.
-        if path != "/api/claude-ai/sync" and not self._require_dashboard_key():
+        _NO_DASH_KEY = {"/api/claude-ai/sync", "/api/hooks/cost-event"}
+        if path not in _NO_DASH_KEY and not self._require_dashboard_key():
             return
 
         body = self._read_body()
+
+        if path == "/api/hooks/cost-event":
+            # v2-F6: Claude Code PreToolUse / PostToolUse hook → live cost meter.
+            data = body or {}
+            project = (data.get("project") or "unknown").strip() or "unknown"
+            session_id = (data.get("session_id") or "unknown").strip() or "unknown"
+            tool_name = (data.get("tool_name") or "").strip()
+            phase = (data.get("phase") or "post").strip().lower()
+            actual = data.get("actual_tokens")
+            est = data.get("estimated_tokens", 500)
+            try:
+                tokens = int(actual) if actual not in (None, "", 0) else int(est or 500)
+            except (TypeError, ValueError):
+                tokens = 500
+            # Compute cost server-side — hooks are dumb pipes.
+            cost_delta = _estimate_cost_usd(project, tokens)
+            count_delta = 1 if phase != "pre" else 0
+            _prune_and_update_live_session(
+                project, session_id, tool_name,
+                cost_delta, count_delta, phase,
+            )
+            self._serve_json({"ok": True})
+            return
 
         if path == "/api/scan":
             if is_scan_running():

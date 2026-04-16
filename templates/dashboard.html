@@ -111,6 +111,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   max-width: 1240px;
   margin: 0 auto;
   padding: 40px 32px 80px;
+  position: relative;  /* v2-F6: anchor the absolute-positioned live-cost widget */
 }
 
 .section { margin-bottom: 48px; }
@@ -775,6 +776,23 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 </header>
 
 <main class="content">
+  <!-- v2-F6: live cost meter (hidden until a Claude Code session pushes events) -->
+  <div id="live-cost-widget" style="
+    opacity: 0;
+    transition: opacity 0.5s;
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: var(--surface);
+    border: 1px solid var(--accent-green);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-family: var(--mono);
+    min-width: 200px;
+    z-index: 10;
+    pointer-events: none;
+  "></div>
+
   <!-- Connection lost banner -->
   <div id="health-banner" style="display:none; background:#FEE2E2; border:1px solid #EF4444; border-radius:10px; padding:18px 24px; margin-bottom:16px; font-family:var(--mono); font-size:13px; color:#991B1B; position:relative;">
     <strong>Dashboard server not responding</strong><br>
@@ -1874,6 +1892,58 @@ function authHeaders() {
       });
   }
   setInterval(healthCheck, 30000);
+
+  // ── v2-F6: live cost meter via Server-Sent Events ─────────────
+  //
+  // EventSource auto-reconnects when the server closes (our SSE handler
+  // closes after 60s, or 10s of no activity, to keep thread pool healthy).
+  // When hooks stop firing for 60s the widget fades out via opacity.
+  var costStream = null;
+  function connectCostStream() {
+    try {
+      costStream = new EventSource('/api/stream/cost');
+      costStream.onmessage = function(e) {
+        try {
+          var data = JSON.parse(e.data);
+          renderLiveWidget(data.sessions || []);
+        } catch (err) { /* bad payload — ignore */ }
+      };
+      costStream.onerror = function() {
+        hideLiveWidget();
+        // Let the browser auto-reconnect; no manual retry needed.
+      };
+    } catch (err) { /* EventSource unavailable — no meter */ }
+  }
+  function renderLiveWidget(sessions) {
+    var widget = $('live-cost-widget');
+    if (!widget) return;
+    var active = (sessions || []).filter(function(s) { return (s.seconds_ago || 0) < 60; });
+    if (!active.length) {
+      widget.style.opacity = '0';
+      return;
+    }
+    widget.style.opacity = '1';
+    var s = active[0];
+    var budgetPct = s.budget_pct || 0;
+    var borderColor = budgetPct > 100 ? 'var(--accent-red)'
+                    : budgetPct > 80  ? 'var(--accent-amber)'
+                    : 'var(--accent-green)';
+    widget.style.borderColor = borderColor;
+    widget.innerHTML =
+      '<div style="font-size:10px;font-weight:500;color:' + borderColor +
+        ';letter-spacing:0.06em">LIVE &nbsp;' + esc(s.project) + '</div>' +
+      '<div style="font-size:18px;font-weight:500;margin:4px 0">$' +
+        Number(s.running_cost_usd || 0).toFixed(4) + '</div>' +
+      '<div style="font-size:11px;color:var(--text-tertiary)">' +
+        Number(s.tool_count || 0) + ' tools &nbsp;·&nbsp; last: ' +
+        esc(s.last_tool || '-') + ' &nbsp;·&nbsp; ' +
+        Number(s.seconds_ago || 0) + 's ago</div>';
+  }
+  function hideLiveWidget() {
+    var w = $('live-cost-widget');
+    if (w) w.style.opacity = '0';
+  }
+  connectCostStream();
 })();
 </script>
 </body>
