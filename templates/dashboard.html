@@ -1490,8 +1490,15 @@ function authHeaders() {
       session_expiry: 'red', pro_messages_low: 'amber',
       floundering_detected: 'red', subagent_cost_spike: 'amber',
       budget_warning: 'amber', budget_exceeded: 'red',
-      bad_compact_detected: 'red',
+      bad_compact_detected: 'red', fix_regressing: 'red',
     };
+    // v2-P1: insight types where "Generate Fix" is meaningful (actionable problems).
+    const fixableTypes = new Set([
+      'floundering_detected', 'bad_compact_detected', 'compaction_gap',
+      'cache_spike', 'subagent_cost_spike', 'model_waste',
+      'window_risk', 'window_combined_risk',
+      'budget_warning', 'budget_exceeded',
+    ]);
     $('ins-list').innerHTML = ins.map(i => {
       const dot = dotMap[i.insight_type] || 'blue';
       const when = i.created_at ? new Date(i.created_at * 1000).toLocaleString('en-US', {hour:'2-digit', minute:'2-digit', month:'short', day:'numeric'}) : '';
@@ -1512,11 +1519,17 @@ function authHeaders() {
           );
         }
       }
+      const fixBtn = fixableTypes.has(i.insight_type)
+        ? '<button class="insight-fix-btn" data-gen-fix="' + i.id + '" style="margin-right:6px;padding:3px 10px;font-size:11px;border:1px solid var(--border);background:var(--surface);color:var(--text-primary);border-radius:3px;cursor:pointer;font-family:var(--sans)">Generate Fix</button>'
+        : '';
       return (
         '<div class="insight-row" data-id="' + i.id + '">' +
           '<div class="insight-dot ' + dot + '"></div>' +
-          '<div class="insight-msg">' + esc(i.message) + (extra ? '<br>' + extra : '') + '</div>' +
+          '<div class="insight-msg">' + esc(i.message) + (extra ? '<br>' + extra : '') +
+            '<div class="fix-result" id="fix-result-' + i.id + '" style="margin-top:6px"></div>' +
+          '</div>' +
           '<div class="insight-meta">' + esc(when) + '</div>' +
+          fixBtn +
           '<button class="insight-dismiss" data-dismiss="' + i.id + '">×</button>' +
         '</div>'
       );
@@ -1530,6 +1543,59 @@ function authHeaders() {
         fetch('/api/insights/' + id + '/dismiss', {method: 'POST', headers: authHeaders()})
           .then(() => setTimeout(() => { if (row) row.remove(); refresh(); }, 250))
           .catch(() => { if (row) row.classList.remove('dismissing'); });
+      });
+    });
+    // v2-P1: Generate Fix button → LLM generator → show rule_text + Apply button
+    $('ins-list').querySelectorAll('[data-gen-fix]').forEach(b => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = b.dataset.genFix;
+        const resultEl = document.getElementById('fix-result-' + id);
+        const prev = b.textContent;
+        b.disabled = true; b.textContent = 'Generating…';
+        fetch('/api/insights/' + id + '/generate-fix', {method: 'POST', headers: authHeaders()})
+          .then(r => r.json().then(d => ({status: r.status, body: d})))
+          .then(({status, body}) => {
+            b.disabled = false; b.textContent = prev;
+            if (!body.success) {
+              resultEl.innerHTML = '<div style="font-size:11px;color:var(--accent-red);margin-top:4px">' + esc(body.error || 'generation failed') + (body.hint ? ' — ' + esc(body.hint) : '') + '</div>';
+              return;
+            }
+            const pathLabel = body.applied_to_path ? body.applied_to_path : '(no CLAUDE.md found — will create one on apply)';
+            resultEl.innerHTML =
+              '<div style="margin-top:6px;padding:8px 10px;background:var(--bg-alt,#F0EDE6);border:1px solid var(--border);border-radius:3px">' +
+                '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:4px">Generated rule · risk: ' + esc(body.risk_level) + ' · impact: ~' + (body.expected_impact_pct || 0) + '% · target: ' + esc(pathLabel) + '</div>' +
+                (body.reasoning ? '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;font-style:italic">' + esc(body.reasoning) + '</div>' : '') +
+                '<pre style="margin:0;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:2px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-word">' + esc(body.rule_text) + '</pre>' +
+                '<div style="margin-top:6px;display:flex;gap:6px">' +
+                  '<button class="fix-apply-btn" data-apply-fix="' + body.fix_id + '" style="padding:3px 12px;font-size:11px;background:var(--accent-green,#2d7a2d);color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:var(--sans)">Apply to CLAUDE.md</button>' +
+                  '<span style="font-size:10px;color:var(--text-muted);align-self:center">Fix #' + body.fix_id + ' (proposed) · ' + esc(body.model_used || '') + '</span>' +
+                '</div>' +
+              '</div>';
+            const applyBtn = resultEl.querySelector('[data-apply-fix]');
+            if (applyBtn) applyBtn.addEventListener('click', () => {
+              const fid = applyBtn.dataset.applyFix;
+              applyBtn.disabled = true; applyBtn.textContent = 'Applying…';
+              fetch('/api/fixes/' + fid + '/apply', {method: 'POST', headers: authHeaders()})
+                .then(r => r.json())
+                .then(d => {
+                  if (d.success) {
+                    resultEl.innerHTML = '<div style="font-size:11px;color:var(--accent-green,#2d7a2d);margin-top:4px">Applied to ' + esc(d.path) + ' (' + d.lines_added + ' lines). Backup: ' + esc(d.backup) + '</div>';
+                    setTimeout(refresh, 800);
+                  } else {
+                    applyBtn.disabled = false; applyBtn.textContent = 'Apply to CLAUDE.md';
+                    resultEl.insertAdjacentHTML('beforeend', '<div style="font-size:11px;color:var(--accent-red);margin-top:4px">' + esc(d.error || 'apply failed') + '</div>');
+                  }
+                })
+                .catch(() => {
+                  applyBtn.disabled = false; applyBtn.textContent = 'Apply to CLAUDE.md';
+                });
+            });
+          })
+          .catch(() => {
+            b.disabled = false; b.textContent = prev;
+            resultEl.innerHTML = '<div style="font-size:11px;color:var(--accent-red);margin-top:4px">Request failed</div>';
+          });
       });
     });
   }

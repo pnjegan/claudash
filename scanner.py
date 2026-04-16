@@ -733,6 +733,83 @@ def generate_mcp_warnings(conn):
     return emitted
 
 
+def _auto_measure_fixes(conn):
+    """v2-P2: Called from the periodic scan after waste detection. For every
+    fix in status 'applied' or 'measuring' that has aged ≥1 day, has ≥3 new
+    sessions since baseline, and hasn't been measured in the last 6 hours,
+    run measure_fix() and record a fix_regressing insight if the verdict is
+    worsened.
+
+    6-hour measurement dedup prevents fix_measurements from accumulating
+    288 rows/day per fix when the scanner fires every 5 minutes.
+    """
+    import json as _json
+    try:
+        from fix_tracker import measure_fix
+    except ImportError:
+        return 0
+
+    rows = conn.execute(
+        "SELECT id, project, created_at, baseline_json FROM fixes "
+        "WHERE status IN ('applied', 'measuring') AND created_at IS NOT NULL"
+    ).fetchall()
+
+    measured = 0
+    now = time.time()
+    for fix in rows:
+        fix_id = fix["id"]
+        days_elapsed = (now - (fix["created_at"] or 0)) / 86400
+        if days_elapsed < 1:
+            continue
+        try:
+            baseline = _json.loads(fix["baseline_json"] or "{}")
+        except _json.JSONDecodeError:
+            continue
+        baseline_at = baseline.get("captured_at", fix["created_at"] or 0)
+        new_sessions = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM sessions "
+            "WHERE project = ? AND timestamp > ?",
+            (fix["project"], baseline_at),
+        ).fetchone()[0] or 0
+        if new_sessions < 3:
+            continue
+        # 6-hour dedup window — skip if we measured this fix recently.
+        last = conn.execute(
+            "SELECT measured_at FROM fix_measurements "
+            "WHERE fix_id = ? ORDER BY measured_at DESC LIMIT 1",
+            (fix_id,),
+        ).fetchone()
+        if last and (now - last["measured_at"]) < 6 * 3600:
+            continue
+        delta, verdict, _metrics = measure_fix(conn, fix_id)
+        measured += 1
+        if verdict == "worsened":
+            # Emit a fix_regressing insight so the dashboard surfaces it.
+            # Use INSERT OR IGNORE-style dedup by checking for an existing
+            # active insight for this fix_id in the last 24 hours.
+            existing = conn.execute(
+                "SELECT id FROM insights WHERE insight_type = 'fix_regressing' "
+                "AND dismissed = 0 AND created_at > ? AND detail_json LIKE ?",
+                (int(now) - 86400, f'%"fix_id": {fix_id}%'),
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO insights "
+                    "(created_at, account, project, insight_type, message, detail_json, dismissed) "
+                    "VALUES (?, 'personal_max', ?, 'fix_regressing', ?, ?, 0)",
+                    (
+                        int(now),
+                        fix["project"],
+                        f"Fix #{fix_id} regressed — waste increased after applying this fix",
+                        _json.dumps({"fix_id": fix_id, "delta": delta}),
+                    ),
+                )
+                conn.commit()
+    if measured:
+        print(f"[scanner] Auto-measured {measured} fix(es)", file=sys.stderr)
+    return measured
+
+
 def start_periodic_scan(interval_seconds=300):
     def _run():
         while True:
@@ -747,6 +824,10 @@ def start_periodic_scan(interval_seconds=300):
                     try:
                         _detect_all(conn)
                         generate_mcp_warnings(conn)
+                        # v2-P2: Auto-measure fixes that have enough post-baseline
+                        # data. Runs every cycle but dedupes within 6h per fix
+                        # so we don't spam fix_measurements with 288 rows/day.
+                        _auto_measure_fixes(conn)
                     finally:
                         conn.close()
                 except Exception as _e:

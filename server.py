@@ -822,6 +822,145 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "message": msg,
                 })
 
+        elif re.match(r"^/api/insights/(\d+)/generate-fix$", path):
+            # v2-P1: Auto-generate a fix for an insight — matches the insight's
+            # project + type to a recent waste_event, runs the LLM generator,
+            # and inserts a 'proposed' fix. Returns the rule_text for preview.
+            m = re.match(r"^/api/insights/(\d+)/generate-fix$", path)
+            insight_id = int(m.group(1))
+            from fix_generator import generate_fix, insert_generated_fix
+            # Map insight_type -> waste_events.pattern_type
+            PATTERN_MAP = {
+                "floundering_detected": "floundering",
+                "bad_compact_detected": "bad_compact",
+                "compaction_gap": "deep_no_compact",
+                "cache_spike": "repeated_reads",
+                "subagent_cost_spike": "cost_outlier",
+                "model_waste": None,  # any recent waste_event for the project
+                "window_risk": None,
+                "window_combined_risk": None,
+                "budget_warning": None,
+                "budget_exceeded": None,
+            }
+            conn = get_conn()
+            try:
+                ins = conn.execute(
+                    "SELECT id, account, project, insight_type FROM insights WHERE id = ?",
+                    (insight_id,),
+                ).fetchone()
+                if not ins:
+                    self._serve_json({"success": False, "error": "insight not found"}, 404)
+                else:
+                    pattern = PATTERN_MAP.get(ins["insight_type"])
+                    if pattern:
+                        we = conn.execute(
+                            "SELECT id FROM waste_events WHERE project = ? AND pattern_type = ? "
+                            "ORDER BY detected_at DESC LIMIT 1",
+                            (ins["project"], pattern),
+                        ).fetchone()
+                    else:
+                        we = conn.execute(
+                            "SELECT id FROM waste_events WHERE project = ? "
+                            "ORDER BY detected_at DESC LIMIT 1",
+                            (ins["project"],),
+                        ).fetchone()
+                    if not we:
+                        self._serve_json({
+                            "success": False,
+                            "error": f"no waste_event found for project '{ins['project']}' — generator needs a detected pattern to target",
+                        }, 404)
+                    else:
+                        gen = generate_fix(we["id"], conn)
+                        if gen.get("error"):
+                            self._serve_json({
+                                "success": False,
+                                "error": gen["error"],
+                                "hint": "Run `claudash keys --set-provider` to configure an LLM provider.",
+                            }, 400)
+                        else:
+                            fix_id = insert_generated_fix(conn, we["id"], gen)
+                            self._serve_json({
+                                "success": True,
+                                "fix_id": fix_id,
+                                "rule_text": gen["rule_text"],
+                                "reasoning": gen.get("reasoning", ""),
+                                "risk_level": gen.get("risk_level", "low"),
+                                "expected_impact_pct": gen.get("expected_impact_pct", 0),
+                                "applied_to_path": gen.get("claude_md_path", ""),
+                                "model_used": gen.get("model_used", ""),
+                            })
+            finally:
+                conn.close()
+
+        elif re.match(r"^/api/fixes/(\d+)/apply$", path):
+            # v2-P1: Write a proposed fix's rule_text to its CLAUDE.md file.
+            # Creates a timestamped backup first. Transitions status to 'applied'.
+            m = re.match(r"^/api/fixes/(\d+)/apply$", path)
+            fix_id = int(m.group(1))
+            import shutil
+            from db import get_fix, update_fix_status
+            from fix_generator import find_claude_md
+            conn = get_conn()
+            try:
+                fix = get_fix(conn, fix_id)
+                if not fix:
+                    self._serve_json({"success": False, "error": "fix not found"}, 404)
+                elif fix.get("status") not in ("proposed", "applied"):
+                    self._serve_json({
+                        "success": False,
+                        "error": f"fix status is '{fix.get('status')}' — only 'proposed' fixes can be applied",
+                    }, 400)
+                else:
+                    # Resolve target path: prefer stored applied_to_path, else re-discover
+                    target = (fix.get("applied_to_path") or "").strip()
+                    if not target or not os.path.isfile(target):
+                        target, _existing = find_claude_md(fix["project"], conn)
+                    if not target:
+                        self._serve_json({
+                            "success": False,
+                            "error": f"no CLAUDE.md found for project '{fix['project']}' — create ~/.claude/projects/*<project>*/CLAUDE.md first",
+                        }, 404)
+                    else:
+                        rule_text = (fix.get("fix_detail") or "").strip()
+                        if not rule_text:
+                            self._serve_json({"success": False, "error": "fix has no rule_text to apply"}, 400)
+                        else:
+                            # Backup
+                            backup = f"{target}.claudash-backup-{int(time.time())}"
+                            try:
+                                shutil.copy2(target, backup)
+                            except OSError as _e:
+                                self._serve_json({"success": False, "error": f"backup failed: {_e}"}, 500)
+                                return
+                            # Append
+                            block = f"\n\n<!-- Added by Claudash fix #{fix_id} {time.strftime('%Y-%m-%d')} -->\n{rule_text}\n"
+                            try:
+                                with open(target, "a", encoding="utf-8") as f:
+                                    f.write(block)
+                            except OSError as _e:
+                                self._serve_json({"success": False, "error": f"write failed: {_e}"}, 500)
+                                return
+                            # Update fix row — status='applied', path, baseline snapshot
+                            try:
+                                from fix_tracker import capture_baseline
+                                baseline = capture_baseline(conn, fix["project"])
+                                conn.execute(
+                                    "UPDATE fixes SET status='applied', applied_to_path=?, baseline_json=? WHERE id=?",
+                                    (target, json.dumps(baseline), fix_id),
+                                )
+                                conn.commit()
+                            except Exception:
+                                update_fix_status(conn, fix_id, "applied")
+                            lines_added = block.count("\n")
+                            self._serve_json({
+                                "success": True,
+                                "path": target,
+                                "backup": backup,
+                                "lines_added": lines_added,
+                            })
+            finally:
+                conn.close()
+
         else:
             self.send_error(404)
 

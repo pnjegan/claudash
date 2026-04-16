@@ -604,7 +604,7 @@ def generate_fix(waste_event_id, conn=None):
                 pattern_type=pattern_type, project=project,
             )
 
-        _claude_md_path, claude_md_text = find_claude_md(project, conn)
+        claude_md_path, claude_md_text = find_claude_md(project, conn)
         fix_history = _previous_fixes(conn, project)
         prompt = _build_prompt(pattern_type, we, claude_md_text, fix_history)
         if prompt is None:
@@ -660,6 +660,7 @@ def generate_fix(waste_event_id, conn=None):
             "model_used": model,
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
+            "claude_md_path": claude_md_path or "",
             "error": None,
             "_raw_prompt": prompt,
             "_raw_response": text,
@@ -679,9 +680,9 @@ def insert_generated_fix(conn, waste_event_id, gen):
             "INSERT INTO fixes "
             "(created_at, project, waste_pattern, title, fix_type, fix_detail, "
             " baseline_json, status, generated_by, generation_prompt, "
-            " generation_response, waste_event_id) "
+            " generation_response, waste_event_id, applied_to_path) "
             "VALUES (?, ?, ?, ?, 'claude_md_rule', ?, '{}', 'proposed', "
-            "        'claudash', ?, ?, ?)",
+            "        'claudash', ?, ?, ?, ?)",
             (
                 int(time.time()),
                 gen["project"],
@@ -691,6 +692,7 @@ def insert_generated_fix(conn, waste_event_id, gen):
                 gen.get("_raw_prompt", ""),
                 gen.get("_raw_response", ""),
                 int(waste_event_id),
+                gen.get("claude_md_path", ""),
             ),
         )
         conn.commit()
