@@ -99,9 +99,17 @@ def test_i01_server_health():
         return
     version = data.get("version", "")
     server_status = data.get("status", "")
-    if version not in ("1.0.15", "2.0.0"):
+    # Read expected version from package.json so the runner stays in sync
+    # with releases automatically — no more hardcoded version whack-a-mole.
+    try:
+        import json as _json
+        with open(os.path.join(PROJ_DIR, "package.json")) as _f:
+            expected_version = _json.load(_f).get("version", "")
+    except (OSError, ValueError):
+        expected_version = ""
+    if expected_version and version != expected_version:
         record("TEST-I-01", "Server health", "WARN",
-               f"version={version} (expected 1.0.15 — may be newer)")
+               f"version={version} (package.json: {expected_version})")
     elif server_status != "ok":
         record("TEST-I-01", "Server health", "FAIL", f"status={server_status}")
     else:

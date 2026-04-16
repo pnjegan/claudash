@@ -991,3 +991,39 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 
 - **No unit test exercises `_call_openrouter` against a live endpoint** — TEST-V2-F4 still SKIPs without a configured provider. Round-trip verification requires the user to run `claudash keys --set-provider` choice [3] with a real OpenRouter key.
   Why deferred: same as Session 14 — provider-key-dependent.
+
+## [2026-04-16] Session 15 (cont.) — v2.0.2: find_claude_md fuzzy matching for renamed/versioned project dirs
+
+### Fixed
+- **`find_claude_md()` returned None for every project with a versioned, renamed, or non-`~/projects/` source dir** — broke the apply endpoint for almost all real users. The old 4-step lookup only checked `~/projects/<exact-DB-name>/CLAUDE.md`, but DB-normalized names (`Tidify`, `WikiLoop`, `CareerOps`, `Knowl`, `Brainworks`, `Claudash`) almost never match the on-disk dir verbatim — projects get version-suffixed (`Tidify15`), live under non-projects roots (`~/wikiloop`, `~/resumestiffs/career-ops`, `~/newprojects/knowl`), use kebab-case, or get renamed entirely (`Claudash` → `jk-usage-dashboard`).
+
+  Replaced with an 8-step search that resolves all 6 known DB projects to their real CLAUDE.md:
+  - Step 0: `_PROJECT_ALIASES` map for irreconcilable renames (`claudash → jk-usage-dashboard`)
+  - Step 1: Legacy `~/.claude/projects/<encoded>/` walk (kept; rarely populated since those dirs hold JSONL, not CLAUDE.md)
+  - Steps 2–4: Exact and lowercase `~/projects/<project>/`
+  - Steps 5–6: Prefix glob `~/projects/<project>*` with descending sort (picks `Tidify15` over `Tidify12`); excludes `backup`, `node_modules`, `archive` tokens
+  - Step 7: HOME walk depth 2 with **alphanumeric-normalized** substring matching (`careerops` resolves to `career-ops`)
+  - Step 8: Global `~/.claude/CLAUDE.md` fallback
+
+  Verified end-to-end: `POST /api/fixes/12/apply` (WikiLoop) returned `success:true` with `path=/root/wikiloop/.claude/CLAUDE.md` and `lines_added=11`. Backup file created.
+  Files: fix_generator.py (find_claude_md, new helpers _excluded/_normalize/_check_dir, _PROJECT_ALIASES const)
+
+- **Test runner version expectation was hardcoded** — `TEST-I-01` had `version not in ("1.0.15", "2.0.0")` which warned on every release until manually bumped (commit `694cc9c` did this for v2.0.0). Now reads `package.json` at test time so the runner stays in sync with releases automatically.
+  Files: claudash_test_runner.py (test_i01_server_health)
+
+### Architecture Decisions
+- **Explicit alias map for the irreconcilable case (`Claudash → jk-usage-dashboard`).** Pure fuzzy matching can't bridge two unrelated identifiers. The alternative — adding a DB column to record the source dir at scan time — is more invasive and only pays off if multiple projects need this. Currently one entry handles it; the `_PROJECT_ALIASES` dict scales as additional renames surface.
+  Impact: a maintainer adding a new alias edits one constant; no migration, no schema change.
+
+- **Alphanumeric normalization for fuzzy matching** (`_normalize` strips everything that isn't a-z/0-9). Lets `careerops` match `career-ops`, `wiki_loop`, etc. without per-project rules. Risk: theoretical false positive if a project named `ab` exists and a directory `aab` is on disk — acceptable, the depth-2 HOME walk is bounded and excludes typical noise dirs.
+  Impact: handles the kebab-case / snake_case / no-separator variants users actually create.
+
+- **Prefix glob with `reverse=True` sort picks the latest version automatically** — `Tidify15` beats `Tidify14` beats `Tidify12` lexicographically (works as long as version suffixes stay zero-padded or single-digit). Avoids hardcoded version awareness.
+  Impact: when the user spins up `Tidify16`, the fix generator follows automatically without code changes.
+
+### Known Issues / Not Done
+- **Two-digit version suffix flip risk** — `Tidify9` would sort *higher* than `Tidify10` lexicographically. Not a current user; flag for `Tidify20` era.
+  Why deferred: 6+ months out, simple natural-sort fix when needed.
+
+- **The legacy step (1) `~/.claude/projects/<encoded>/CLAUDE.md` walk is effectively dead code** — those encoded dirs hold JSONL transcripts, not CLAUDE.md. Kept per spec ("preserve existing logic") and because the cost is one cheap `os.listdir` call.
+  Why deferred: removing it is a separate cleanup; not blocking the fix.
