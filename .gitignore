@@ -54,3 +54,4 @@ usage_export.csv
 .claude/
 .dev-cdc/
 .npmrc
+claudash.db
