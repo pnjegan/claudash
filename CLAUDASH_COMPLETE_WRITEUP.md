@@ -63,6 +63,20 @@ The project committed early to being a local-first, privacy-preserving tool. All
 
 The other commitment was to real-time feedback. The existing tools were retrospective — run them after the fact to see what happened. Claudash wanted to be active during sessions: SSE streaming a live cost meter, MCP tools that Claude itself can call to get context about its own performance, and pre/post hooks that fire on every tool use.
 
+### Version 2 — Built in One Session
+
+On April 16, 2026, version 2.0 was designed and built in a single working session. Seven features were added, 57 automated gate checks were run, and zero failures were recorded:
+
+- **F1**: Session lifecycle event tracking — 280 events (135 compact, 145 subagent_spawn), all with context percentage at time of event
+- **F2**: Context rot visualization — inline SVG chart per project showing output/input ratio degrading with session depth
+- **F3**: Bad compact detector — regex-based detection of post-compact context loss signals
+- **F4**: Agentic fix loop Phase 1 — LLM-driven CLAUDE.md rule generation with 3-provider support (Anthropic, AWS Bedrock, OpenAI-compatible including Groq)
+- **F5**: Bidirectional MCP — 10 tools total (5 read + 5 write), warning queue, Claude Code can now report its own waste
+- **F6**: Streaming cost meter — SSE endpoint + Claude Code hooks, live cost ticker in the dashboard, real-time floundering detection
+- **F7**: Per-project autoCompactThreshold recommendations — data-driven settings.json snippets, copyable from the dashboard
+
+All 8 commits pushed to github.com/pnjegan/claudash the same day. Zero pip dependencies added to the core. The tool remains installable with a single npm command: `npm install -g @jeganwrites/claudash`.
+
 ---
 
 ## 2. What Claudash Actually Is
@@ -497,17 +511,27 @@ In the live data, context rot typically begins around turn 30-40 for Opus sessio
 
 ### `recommend_compact_threshold(project, account_id)`
 
-The compaction advisor. Returns a recommended `autoCompactThreshold` (0-100 integer, representing context %) for each project, based on Rules A through E:
+The compaction advisor. Returns a recommended `autoCompactThreshold` (0-1 float, representing context %) for each project, based on Rules A through E:
 
-**Rule A — Default**: If fewer than 5 sessions, return 70 (conservative default).
+**Rule A — No data (compact_count < 3)**:
+Return `recommended_threshold = 0.70`, `confidence = "low"`, `data_sufficient = False`. Safe default when not enough history exists.
 
-**Rule B — Historical compact timing**: If the project has at least 5 compact events, use the 25th percentile of `context_pct_at_event`. This means "compact earlier than most of your historical compactions."
+**Rule B — Late compaction (avg_compact_pct > 80%)**:
+Sessions are compacting too late. Recommend `0.65` to compact earlier and give the summary 15% more context to work with.
+`reasoning = "Your sessions compact at avg {pct}% — too late. 0.65 gives a safety buffer before context rot."`
 
-**Rule C — Context rot inflection**: If `compute_context_rot()` finds an inflection below the Rule B threshold, use the inflection point instead. Compact before quality degrades.
+**Rule C — Good timing, bad compacts exist (avg 60-80%, bad_compact > 0)**:
+Some compacts dropped context. Compact 10% earlier than current average:
+`recommended = round(avg_pct/100 - 0.10, 2)`
 
-**Rule D — Subagent adjustment**: If the project frequently spawns subagents at >70% context, lower the threshold by 10 points to ensure there is always room for a subagent's work.
+**Rule D — Compacting too early (avg < 60%)**:
+Compact events are happening at low context (often subagent drops, not real /compact invocations). Recommend `0.70` as a sane default. This rule fires for all 6 projects in current live data because the compact detector fires on subagent context drops at ~16% context.
 
-**Rule E — Budget cap**: If the project's average session cost exceeds a configurable threshold, cap the recommended compact threshold at 60 regardless. Expensive sessions benefit most from aggressive compaction.
+**Rule E — Good timing, no bad compacts (avg 60-80%, bad_compact = 0)**:
+Current behavior is healthy. Formalize it:
+`recommended = round(avg_pct / 100, 2)`
+
+**Known limitation**: All 6 current projects hit Rule D (recommended 0.70) because the 135 compact events in lifecycle_events are mostly subagent context drops at 16% avg context, not user-triggered /compact commands. As real /compact usage accumulates, Rules B/C/E will fire and recommendations will become project-specific. The fix: add `tokens_after > 1000` filter to `detect_lifecycle_events()` to exclude subagent drops — documented as a known improvement.
 
 ### `compute_efficiency_score(account_id)`
 
@@ -525,7 +549,7 @@ Score is 0-100. In the live data, the personal_max account scores around 62/100 
 
 ### `full_analysis(account_id)`
 
-Assembles all metric functions into a single dict passed to the dashboard's `/api/analysis` endpoint. The structure:
+Assembles all metric functions into a single dict passed to the dashboard's `/api/data` endpoint. The structure:
 
 ```python
 {
@@ -605,7 +629,7 @@ for session in sessions:
         # emit waste event
 ```
 
-In live data: included in the 56 repeated_reads events (the detector overlap means some sessions are classified as both).
+In live data: **0 floundering events** currently. The floundering detector correctly identifies 0 events because the input-hash dedup fix (BUG-008, Session 7) made detection stricter — only truly identical tool calls (same tool, same input) are counted. This is correct behavior. Sessions that previously showed floundering dropped to 0 after the CLAUDE.md rules applied on April 11 (fix #5 in the database: max-retry rule). The 0 count is a success metric, not an absence of detection.
 
 ### `_detect_deep_no_compact(sessions)`
 
@@ -739,7 +763,7 @@ Each waste pattern has a dedicated template:
 
 #### Three Provider Functions
 
-**`_call_anthropic(prompt, model, api_key)`**: Direct Anthropic API via the `anthropic` Python SDK. Returns the assistant message text.
+**`_call_anthropic(prompt, model, api_key)`**: Direct Anthropic API via Python's stdlib `urllib.request`. No SDK dependency — this was a deliberate choice to keep the core tool pip-dependency-free. The HTTP call uses `urllib.request.Request` with `x-api-key` and `anthropic-version` headers. The system prompt is sent with `cache_control: {"type": "ephemeral"}` to enable prompt caching — subsequent calls with the same system prompt cost 90% less.
 
 **`_call_bedrock(prompt, model, region)`**: Uses `boto3` for AWS Bedrock inference. The `boto3` import is lazy (inside the function) to avoid a hard dependency for users not using Bedrock.
 
@@ -879,22 +903,41 @@ The decision was deliberate: zero external dependencies for the server. Users in
 
 ### Route Table
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Main dashboard HTML (served from embedded template) |
-| GET | `/api/analysis` | Full metrics JSON from `full_analysis()` |
-| GET | `/api/insights` | Active insights list |
-| GET | `/api/waste` | Waste events list |
-| GET | `/api/fixes` | Fix tracker state |
-| GET | `/api/lifecycle` | Lifecycle events |
-| GET | `/api/compact-recommendations` | Per-project threshold recommendations |
-| GET | `/api/browser-accounts` | Browser account snapshots |
-| GET | `/sse/cost-meter` | SSE stream for live cost meter |
-| POST | `/api/hooks/cost-event` | Receives pre/post hook events |
-| POST | `/api/insights/dismiss` | Dismisses an insight |
-| POST | `/api/scan` | Triggers immediate scan |
-| POST | `/api/fixes/add` | Creates a new fix |
-| POST | `/api/fixes/measure` | Records a measurement |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/` | None | Main dashboard HTML |
+| GET | `/accounts` | None | Account management HTML |
+| GET | `/health` | None | Server health + version |
+| GET | `/api/health` | None | DB stats + last scan |
+| GET | `/api/data?account=<id>` | None | Full rollup — all metrics, projects, waste, lifecycle, context_rot, recommendations |
+| GET | `/api/projects?account=<id>` | None | Per-project metrics array |
+| GET | `/api/insights?account=<id>` | None | Active insights |
+| GET | `/api/window?account=<id>` | None | 5h window status + burn rate |
+| GET | `/api/trends?account=<id>&days=<n>` | None | Daily rollups + monthly projection |
+| GET | `/api/alerts` | None | Last 20 alerts |
+| GET | `/api/fixes` | None | All fixes with latest measurement |
+| GET | `/api/fixes/{id}` | None | One fix with full measurement history |
+| GET | `/api/fixes/{id}/share-card` | None | Plain-text share card |
+| GET | `/api/accounts` | None | All active accounts |
+| GET | `/api/accounts/{id}/projects` | None | Project keyword map |
+| GET | `/api/claude-ai/accounts` | None | Browser accounts + latest snapshot |
+| GET | `/api/claude-ai/accounts/{id}/history` | None | Last 48 snapshots |
+| GET | `/api/lifecycle?project=<name>` | None | Lifecycle events (compact + subagent_spawn) |
+| GET | `/api/context-rot?project=<name>` | None | Context rot curve + inflection |
+| GET | `/api/bad-compacts?project=<name>` | None | Bad compact events |
+| GET | `/api/recommendations?project=<name>` | None | autoCompactThreshold recommendation |
+| GET | `/api/stream/cost` | None | SSE live cost meter stream |
+| GET | `/api/real-story` | None | 5 archetype insight stories |
+| POST | `/api/scan` | Dashboard-Key | Trigger scan + insights regen |
+| POST | `/api/hooks/cost-event` | None (localhost-only) | Hook receiver for live meter |
+| POST | `/api/insights/{id}/dismiss` | Dashboard-Key | Dismiss insight |
+| POST | `/api/fixes` | Dashboard-Key | Create fix (capture baseline) |
+| POST | `/api/fixes/{id}/measure` | Dashboard-Key | Measure fix, compute verdict |
+| POST | `/api/accounts` | Dashboard-Key | Create account |
+| POST | `/api/claude-ai/sync` | Sync-Token | Browser sync push |
+| PUT | `/api/accounts/{id}` | Dashboard-Key | Update account |
+| DELETE | `/api/accounts/{id}` | Dashboard-Key | Soft-delete account |
+| DELETE | `/api/fixes/{id}` | Dashboard-Key | Revert fix |
 
 ### `_require_dashboard_key(self)`
 
@@ -913,7 +956,7 @@ def _require_dashboard_key(self):
     return True
 ```
 
-The SSE endpoint (`/sse/cost-meter`) also checks origin: it only accepts connections from `localhost` or `127.0.0.1` in the `Origin` header.
+The SSE endpoint (`/api/stream/cost`) also checks origin: it only accepts connections from `localhost` or `127.0.0.1` in the `Origin` header.
 
 ### LRU Cache
 
@@ -960,7 +1003,7 @@ This prevents a slow database query from blocking the HTTP server indefinitely.
 
 ### SSE Live Cost Meter
 
-The `/sse/cost-meter` endpoint streams Server-Sent Events to the browser. The stream format:
+The `/api/stream/cost` endpoint streams Server-Sent Events to the browser. The stream format:
 
 ```
 data: {"sessions": [...], "total_estimated_cost": 0.42, "last_updated": 1776330000}
@@ -1068,10 +1111,10 @@ def handle_request(request):
 
 ### MCP Registration
 
-To register Claudash's MCP server with Claude Code:
+To register Claudash's MCP server with Claude Code, merge this into `~/.claude/settings.json`:
 
 ```json
-// ~/.claude/claude.json or project .claude/claude.json
+// ~/.claude/settings.json
 {
   "mcpServers": {
     "claudash": {
@@ -1082,7 +1125,7 @@ To register Claudash's MCP server with Claude Code:
 }
 ```
 
-The `claudash mcp` command invokes `cmd_mcp()` in `cli.py`, which calls `run_stdio()`.
+Run `claudash mcp` to print this snippet ready to copy-paste. The `claudash mcp` command invokes `cmd_mcp()` in `cli.py`, which calls `run_stdio()`.
 
 ### `run_test()`
 
@@ -1120,7 +1163,7 @@ The work_pro account's 91% seven-day utilization is notable — this account is 
 
 ### `mac_sync_mode`
 
-The `claude_ai_accounts` table has a `mac_sync_mode` column. Both accounts have it set to `1`. This mode was intended for a macOS Keychain integration where session keys would be read from the system keychain rather than stored in the database. The feature was prototyped but not fully implemented — `mac_sync_mode = 1` currently has no effect in the code, but the column exists for forward compatibility.
+The `mac_sync_mode` column controls polling behavior. When set to `1` (as both accounts are configured), the server-side polling is suppressed — Claudash does not attempt to poll claude.ai from the VPS. Instead, data flows in exclusively via push from `tools/mac-sync.py` running on the Mac, which reads the browser cookie and POSTs to `/api/claude-ai/sync`. This is the correct architecture for a VPS setup: the VPS has no browser, so it cannot poll claude.ai directly. The Mac, which has the browser session, pushes data to the VPS on a schedule. Both accounts have `mac_sync_mode=1` and have 28 snapshots from this push mechanism.
 
 ### Session Key Storage
 
@@ -1294,8 +1337,7 @@ The tradeoff is that the database cannot be shared across machines. The `sync_to
 
 As noted in §10, no web framework was used. This keeps the runtime dependency list to:
 - Python 3.8+ (required)
-- `anthropic` Python SDK (optional — only for fix generation)
-- `boto3` (optional — only for Bedrock provider)
+- `boto3` (optional — only for Bedrock provider, lazy-imported inside `_call_bedrock()` so non-Bedrock users have zero pip dependencies)
 - No other Python packages
 
 The npm package handles the user-facing distribution. Everything else is Python stdlib.
@@ -1373,6 +1415,7 @@ This model distribution is the source of 4 active `model_waste` insights — 85.
 | repeated_reads | 56 | $7,357.18 | $131.38 |
 | deep_no_compact | 16 | $1,784.99 | $111.56 |
 | cost_outlier | 4 | $1,544.42 | $386.11 |
+| floundering | 0 | $0 | — (Fixed by Apr 11 CLAUDE.md rules) |
 | bad_compact | 0 | $0 | — |
 | **Total** | **76** | **$10,686.59** | |
 
@@ -1514,7 +1557,7 @@ Four features in one session:
 
 **F5**: Bidirectional MCP — added 5 write-side tools (claudash_trigger_scan, claudash_report_waste, claudash_generate_fix, claudash_dismiss_insight, claudash_get_warnings). `generate_mcp_warnings()` added.
 
-**F6**: SSE streaming cost meter. `_live_sessions` dict. `/sse/cost-meter` endpoint. `hooks/pre_tool_use.sh` and `hooks/post_tool_use.sh`. `/api/hooks/cost-event` endpoint.
+**F6**: SSE streaming cost meter. `_live_sessions` dict. `/api/stream/cost` endpoint. `hooks/pre_tool_use.sh` and `hooks/post_tool_use.sh`. `/api/hooks/cost-event` endpoint.
 
 **F7**: `recommend_compact_threshold()` per-project recommendations wired to both dashboard UI and MCP `claudash_summary` tool. `autoCompactThreshold` recommendations exposed via the compaction advisor panel.
 
@@ -1603,7 +1646,7 @@ session_id = obj.get("sessionId") or obj.get("uuid")
 **Session**: Multiple
 **Symptom**: Browser account snapshot becomes stale. `last_error` column shows authentication errors.
 **Root cause**: claude.ai session cookies expire. The stored `session_key` becomes invalid and all subsequent polls fail.
-**Fix** (partial): Added `last_error` column to track the failure. The dashboard shows a warning when `last_error` is set. However, there is no automated re-authentication — the user must manually update the session key via `claudash claude-ai add`. The `mac_sync_mode` feature was intended to address this via Keychain but is not yet implemented.
+**Fix** (partial): Added `last_error` column to track the failure. The dashboard shows a warning when `last_error` is set. However, there is no automated re-authentication — the user must manually update the session key via `claudash claude-ai add`. The `mac_sync_mode` flag (see §12) handles the push architecture but does not refresh expired cookies; the Mac-side `tools/mac-sync.py` must be re-run with a fresh browser session.
 
 ### BUG-012: `init_db()` Called Multiple Times Causes Constraint Violations
 
@@ -1640,7 +1683,7 @@ This section is intentionally honest. As of v1.0.15, these are the known gaps.
 
 **Bad compact detector has zero hits**: `detect_bad_compacts()` has been in the codebase since session 11, but the live database shows 0 bad_compact events. Either the 5 regex signals are too specific to fire on real data, or actual bad compacts are not happening. Without a confirmed true positive, it is hard to know which.
 
-**`mac_sync_mode` is a stub**: The column exists, both accounts have it set to `1`, and the intent was to read session keys from macOS Keychain rather than storing them in SQLite. The Keychain integration code does not exist. The column is currently dead weight.
+**`mac_sync_mode` is working as designed**: When set to `1`, the server skips outbound polling of claude.ai and relies on push from `tools/mac-sync.py` running on a Mac with browser access. Both accounts have `mac_sync_mode=1` and receive snapshots via this push flow. See §12 for the full explanation.
 
 **VPS sync is not built**: The `config.py` reads `VPS_IP` and `VPS_PORT` from environment variables and the settings table has a `sync_token` key. No sync code exists. The design was sketched in comments but never implemented.
 
@@ -1658,7 +1701,7 @@ This section is intentionally honest. As of v1.0.15, these are the known gaps.
 
 **No index on `sessions.project`**: The `project_metrics()` function runs `SELECT ... FROM sessions WHERE project = ?` which does a full table scan on 21,051 rows. At this size it is fast (~10ms), but will become noticeable above 100K sessions. No indexes are defined in `init_db()`.
 
-**`full_analysis()` recomputes everything**: Each call to the `/api/analysis` endpoint calls all metric functions, which each issue multiple SQL queries. The 60-second LRU cache mitigates this, but cache misses are expensive. A background computation thread that pre-computes and caches analysis would be better.
+**`full_analysis()` recomputes everything**: Each call to the `/api/data` endpoint calls all metric functions, which each issue multiple SQL queries. The 60-second LRU cache mitigates this, but cache misses are expensive. A background computation thread that pre-computes and caches analysis would be better.
 
 **Context rot computation is O(n) on all sessions**: `compute_context_rot()` loads all sessions for an account into memory to bin them. At 21,051 sessions this is fine. At 1M sessions it would be a problem.
 
@@ -1782,7 +1825,7 @@ The lifecycle_events table shows compact events with `context_pct_at_event`. Bre
 - **Claudash**: Self-referential build sessions. Compact timing more variable (10-40%). Recommended threshold: ~20.
 - **Brainworks**: Fewer sessions. Compact timing unclear.
 
-The per-project recommendations are served via the `/api/compact-recommendations` endpoint and shown in the dashboard's compaction advisor panel. They are also returned by the `claudash_summary` MCP tool so Claude itself can see and set its own `autoCompactThreshold` for the current project.
+The per-project recommendations are served via the `/api/recommendations` endpoint and shown in the dashboard's compaction advisor panel. They are also returned by the `claudash_summary` MCP tool so Claude itself can see and set its own `autoCompactThreshold` for the current project.
 
 ### The `compact_timing_pct` Column
 
@@ -2002,6 +2045,65 @@ This is the concrete feedback loop that Claudash was designed to enable: observe
 | Compaction noise floor | scanner.py | 1000 | Min prev_ctx to run detection |
 | Scan interval | server.py | 300 | Periodic scan interval (seconds) |
 | ThreadPool timeout | server.py | 10 | Max seconds for analysis queries |
+
+---
+
+## Appendix K: Which LLM Provider to Use for Fix Generation
+
+Three providers are supported. For most users, Groq is the best starting point:
+
+**Groq (recommended for new users)**
+- Free tier: generous limits, enough for hundreds of fix generations
+- Model: `llama-3.3-70b-versatile` — works well for CLAUDE.md rules
+- Setup: Get key at console.groq.com → choose OpenAI-compatible endpoint
+- URL: `https://api.groq.com/openai/v1`
+- Command: `claudash keys --set-provider` → choose [3] → enter Groq URL + key
+
+**AWS Bedrock (recommended if you have existing AWS spend)**
+- Cost: Bedrock pricing (check console.aws.amazon.com/bedrock)
+- Auth: Uses `~/.aws/credentials` — no new key needed if AWS is configured
+- Model: `anthropic.claude-sonnet-4-5-20251001`
+- Command: `claudash keys --set-provider` → choose [2] → enter region
+
+**Anthropic API (direct)**
+- Cost: ~$0.003 per fix generation (~$0.30 per 100 fixes)
+- Model: `claude-sonnet-4-5`
+- Key: Get from console.anthropic.com → API Keys
+- Command: `claudash keys --set-provider` → choose [1] → enter key
+
+**Privacy note**: Fix generation sends to the LLM:
+- Pattern type (e.g. "repeated_reads")
+- Project name (e.g. "Tidify")
+- File basenames only — NOT full paths
+- Your current CLAUDE.md contents
+- Nothing else — no conversation history, no source code, no credentials
+
+---
+
+## Appendix L: What to Build Next
+
+In priority order:
+
+**P1 — Configure Bedrock or Groq and run a live fix generation**
+Before building F4 Phase 2 (auto-apply), validate that the generator produces concrete, actionable rules on real Tidify waste data. `claudash fix generate <repeated_reads_event_id>` and review the output.
+
+**P2 — Fix compact detection accuracy**
+Add `tokens_after > 1000` filter in `detect_lifecycle_events()`. This excludes subagent context drops from compact events, making F7 recommendations project-specific instead of all returning 0.70. Estimated: 30 minutes.
+
+**P3 — F4 Phase 2: fix_applier.py**
+Write approved fixes to CLAUDE.md automatically. Full spec in CLAUDASH_V2_PRD.md §3.3. Requires: CLAUDE.md backup before write, mtime conflict detection, path safety check (stay inside ~/projects/). Estimated: 1 session.
+
+**P4 — Fix context rot metric**
+Change `output_tokens / input_tokens` to `output_tokens / (input_tokens + cache_read_tokens)` in `compute_context_rot()`. Makes the rot curve less noisy. Estimated: 15 minutes.
+
+**P5 — npm version bump to 2.0.0 and publish**
+`npm version 2.0.0 && npm publish --access public` Update package.json version. Push tag to GitHub.
+
+**P6 — README screenshot**
+Take a screenshot of the dashboard showing waste events + fix tracker. Add to `docs/screenshot.png`. Update README.md img reference.
+
+**P7 — BUG-004: Fix measurement dedup**
+Fix #5 has 4 measurements within 70 seconds. Add reject-within-5-min guard in `fix_tracker.measure_fix()`. Estimated: 30 minutes.
 
 ---
 
