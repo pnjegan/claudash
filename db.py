@@ -349,9 +349,16 @@ def init_db():
         key = secrets.token_hex(16)
         conn.execute("INSERT INTO settings (key, value) VALUES ('dashboard_key', ?)", (key,))
 
-    # v2-F4 Phase 1: seed agentic-loop settings (never overwrite existing)
+    # v2-F4 Phase 1: seed agentic-loop settings (never overwrite existing).
+    # Multi-provider support: fix_provider picks one of anthropic/bedrock/
+    # openai_compat; provider-specific creds are stored alongside.
     for _k, _v in (
+        ("fix_provider", "anthropic"),
         ("anthropic_api_key", ""),
+        ("aws_region", "us-east-1"),
+        ("openai_compat_url", ""),
+        ("openai_compat_key", ""),
+        ("openai_compat_model", ""),
         ("fix_autogen_enabled", "0"),
         ("fix_autogen_model", "claude-sonnet-4-5"),
     ):

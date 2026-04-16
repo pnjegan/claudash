@@ -1,8 +1,14 @@
-"""Claudash v2-F4 Phase 1 — agentic fix generator.
+"""Claudash v2-F4 — agentic fix generator (multi-provider).
 
-Calls the Anthropic Messages API via stdlib urllib.request (no SDK, no
-pip deps). Given a waste_event row, produces a targeted CLAUDE.md rule
-using a pattern-specific prompt template with ephemeral prompt caching.
+Given a waste_event row, produces a targeted CLAUDE.md rule using a
+pattern-specific prompt template. Dispatches to one of three back-end
+providers chosen by the user:
+
+  - anthropic       direct Anthropic Messages API (urllib, stdlib only)
+  - bedrock         AWS Bedrock Runtime (optional boto3 dependency)
+  - openai_compat   any OpenAI-compatible /chat/completions endpoint
+                    (urllib, stdlib only) — OpenRouter, Azure OpenAI,
+                    LM Studio, Ollama, vLLM, etc.
 
 All public entry points return a dict — they never raise. Error cases
 set the "error" field; callers inspect it.
@@ -23,8 +29,37 @@ from db import get_conn, get_setting
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_BEDROCK_MODEL = "anthropic.claude-sonnet-4-5-20251001"
+BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31"
 MAX_TOKENS = 1024
 HTTP_TIMEOUT = 30  # seconds
+
+
+# ─── Provider catalogue ─────────────────────────────────────────
+
+SUPPORTED_PROVIDERS = {
+    "anthropic": {
+        "label": "Anthropic API (direct)",
+        "model_default": DEFAULT_MODEL,
+        "requires": "anthropic_api_key",
+        "cost_note": "~$0.003 per fix generation (~$0.30/100 fixes)",
+        "setup": "Get key at console.anthropic.com \u2192 API Keys",
+    },
+    "bedrock": {
+        "label": "AWS Bedrock",
+        "model_default": DEFAULT_BEDROCK_MODEL,
+        "requires": "aws_region",
+        "cost_note": "Bedrock pricing varies by region. Check AWS console.",
+        "setup": "Needs ~/.aws/credentials + bedrock:InvokeModel IAM permission",
+    },
+    "openai_compat": {
+        "label": "OpenAI-compatible endpoint (OpenRouter, Azure, local)",
+        "model_default": "",
+        "requires": "openai_compat_url,openai_compat_key",
+        "cost_note": "Depends on your provider/model choice",
+        "setup": "Any OpenAI-compatible endpoint works (OpenRouter, Azure, LM Studio)",
+    },
+}
 
 SYSTEM_PROMPT = (
     "You are a Claude Code optimization expert. Your job is to write a "
@@ -331,53 +366,193 @@ def _build_prompt(pattern_type, waste_event, claude_md, fix_history):
         return None
 
 
-# ─── HTTP call to Anthropic Messages API ─────────────────────────
-
-def _call_anthropic(payload, api_key):
-    """POST to the Messages API. Returns (response_dict, None) on success,
-    (None, error_string) on failure."""
-    body = json.dumps(payload).encode("utf-8")
-    req = Request(ANTHROPIC_URL, data=body, method="POST")
-    req.add_header("content-type", "application/json")
-    req.add_header("x-api-key", api_key)
-    req.add_header("anthropic-version", ANTHROPIC_VERSION)
-
-    try:
-        with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except HTTPError as e:
-        if e.code == 401:
-            return None, "Invalid API key — run: claudash keys --set-anthropic"
-        if e.code == 429:
-            return None, "Rate limited — try again in 60 seconds"
-        if 500 <= e.code < 600:
-            return None, f"Anthropic API error {e.code}"
-        # 4xx other — try to read the error body for clarity
-        try:
-            err_body = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            err_body = ""
-        return None, f"Anthropic API error {e.code}: {err_body}"
-    except (URLError, OSError) as e:
-        return None, f"Network error: {e}"
-
-    try:
-        return json.loads(raw), None
-    except json.JSONDecodeError:
-        return None, f"Invalid JSON from API: {raw[:200]}"
+# ─── Provider transports ────────────────────────────────────────
+#
+# Each _call_* function takes a USER prompt string plus the provider-
+# specific auth/model args, makes one HTTP (or boto3) call, and returns
+# the raw assistant text (str). On ANY failure they raise ValueError
+# with a human-readable message — the top-level dispatcher catches.
+# System prompt is the module-level SYSTEM_PROMPT constant.
 
 
-def _extract_text(api_resp):
-    """Pull the first text block from the Messages API response."""
-    if not isinstance(api_resp, dict):
+def _extract_anthropic_text(resp_dict):
+    """Pull first text block from Anthropic Messages API response."""
+    if not isinstance(resp_dict, dict):
         return ""
-    content = api_resp.get("content") or []
+    content = resp_dict.get("content") or []
     if not isinstance(content, list):
         return ""
     for block in content:
         if isinstance(block, dict) and block.get("type") == "text":
             return block.get("text", "") or ""
     return ""
+
+
+def _call_anthropic(prompt, model, api_key):
+    """Direct Anthropic Messages API. Returns raw assistant text."""
+    if not api_key:
+        raise ValueError("Anthropic API key not set — run: claudash keys --set-provider")
+    payload = {
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "system": [
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(ANTHROPIC_URL, data=body, method="POST")
+    req.add_header("content-type", "application/json")
+    req.add_header("x-api-key", api_key)
+    req.add_header("anthropic-version", ANTHROPIC_VERSION)
+    try:
+        with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as e:
+        if e.code == 401:
+            raise ValueError("Invalid Anthropic API key — run: claudash keys --set-provider")
+        if e.code == 429:
+            raise ValueError("Anthropic rate limited — try again in 60 seconds")
+        if 500 <= e.code < 600:
+            raise ValueError(f"Anthropic API error {e.code}")
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            err_body = ""
+        raise ValueError(f"Anthropic API error {e.code}: {err_body}")
+    except (URLError, OSError) as e:
+        raise ValueError(f"Network error: {e}")
+    try:
+        resp_dict = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(f"Invalid JSON from Anthropic: {raw[:200]}")
+    text = _extract_anthropic_text(resp_dict)
+    if not text:
+        raise ValueError("No text block in Anthropic response")
+    return text
+
+
+def _call_bedrock(prompt, model, region):
+    """AWS Bedrock Runtime (InvokeModel) using the Anthropic-on-Bedrock
+    message shape. Requires boto3 as an optional dependency."""
+    try:
+        import boto3  # optional — not in requirements.txt
+    except ImportError:
+        raise ValueError("boto3 required for Bedrock: pip install boto3")
+
+    model_id = model or DEFAULT_BEDROCK_MODEL
+    try:
+        client = boto3.client("bedrock-runtime", region_name=region or "us-east-1")
+    except Exception as e:
+        raise ValueError(f"Could not create Bedrock client: {e}")
+
+    body = json.dumps({
+        "anthropic_version": BEDROCK_ANTHROPIC_VERSION,
+        "max_tokens": MAX_TOKENS,
+        "system": SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}],
+    })
+    try:
+        resp = client.invoke_model(modelId=model_id, body=body)
+        raw = resp["body"].read().decode("utf-8", errors="replace")
+    except Exception as e:
+        # boto3 raises botocore.exceptions.ClientError etc.; we catch
+        # broadly because we can't import botocore exceptions here.
+        raise ValueError(f"Bedrock invoke_model failed: {e}")
+    try:
+        resp_dict = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(f"Invalid JSON from Bedrock: {raw[:200]}")
+    text = _extract_anthropic_text(resp_dict)
+    if not text:
+        raise ValueError("No text block in Bedrock response")
+    return text
+
+
+def _call_openai_compat(prompt, model, url, api_key):
+    """Any OpenAI-compatible Chat Completions endpoint. Works for
+    OpenRouter, Azure OpenAI, LM Studio, Ollama (openai compat), vLLM."""
+    if not url:
+        raise ValueError("OpenAI-compatible URL not set — run: claudash keys --set-provider")
+    # Accept both "…/v1" base and full "…/chat/completions" URL
+    u = url.rstrip("/")
+    if not u.endswith("/chat/completions"):
+        u = u + "/chat/completions"
+
+    payload = {
+        "max_tokens": MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    if model:
+        payload["model"] = model
+
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(u, data=body, method="POST")
+    req.add_header("content-type", "application/json")
+    if api_key:
+        req.add_header("authorization", f"Bearer {api_key}")
+    try:
+        with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as e:
+        if e.code == 401:
+            raise ValueError("Invalid OpenAI-compatible API key — run: claudash keys --set-provider")
+        if e.code == 429:
+            raise ValueError("OpenAI-compatible endpoint rate limited — try again in 60 seconds")
+        if 500 <= e.code < 600:
+            raise ValueError(f"OpenAI-compatible API error {e.code}")
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            err_body = ""
+        raise ValueError(f"OpenAI-compatible API error {e.code}: {err_body}")
+    except (URLError, OSError) as e:
+        raise ValueError(f"Network error: {e}")
+    try:
+        resp_dict = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(f"Invalid JSON from OpenAI-compatible endpoint: {raw[:200]}")
+    choices = resp_dict.get("choices") if isinstance(resp_dict, dict) else None
+    if not choices or not isinstance(choices, list):
+        raise ValueError("No choices in OpenAI-compatible response")
+    msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(msg, dict):
+        raise ValueError("Malformed choice in OpenAI-compatible response")
+    text = msg.get("content") or ""
+    if not text:
+        raise ValueError("Empty content in OpenAI-compatible response")
+    return text
+
+
+def _call_provider(prompt, conn):
+    """Route to the user-selected provider. Returns (raw_text, model_used).
+    Raises ValueError on any configuration or transport failure."""
+    provider = (get_setting(conn, "fix_provider") or "anthropic").strip()
+    if provider == "anthropic":
+        model = get_setting(conn, "fix_autogen_model") or DEFAULT_MODEL
+        key = (get_setting(conn, "anthropic_api_key") or "").strip()
+        return _call_anthropic(prompt, model, key), model
+    if provider == "bedrock":
+        model = get_setting(conn, "fix_autogen_model") or DEFAULT_BEDROCK_MODEL
+        region = (get_setting(conn, "aws_region") or "us-east-1").strip()
+        return _call_bedrock(prompt, model, region), model
+    if provider == "openai_compat":
+        url = (get_setting(conn, "openai_compat_url") or "").strip()
+        key = (get_setting(conn, "openai_compat_key") or "").strip()
+        # Provider-specific model slot wins; falls back to fix_autogen_model
+        model = (get_setting(conn, "openai_compat_model")
+                 or get_setting(conn, "fix_autogen_model") or "").strip()
+        return _call_openai_compat(prompt, model, url, key), (model or "(unspecified)")
+    raise ValueError(
+        f"Unknown fix_provider '{provider}' — run: claudash keys --set-provider"
+    )
 
 
 def _parse_fix_json(text):
@@ -429,13 +604,6 @@ def generate_fix(waste_event_id, conn=None):
                 pattern_type=pattern_type, project=project,
             )
 
-        api_key = (get_setting(conn, "anthropic_api_key") or "").strip()
-        if not api_key:
-            return _err(
-                "ANTHROPIC_API_KEY not set — run: claudash keys --set-anthropic",
-                pattern_type=pattern_type, project=project,
-            )
-
         _claude_md_path, claude_md_text = find_claude_md(project, conn)
         fix_history = _previous_fixes(conn, project)
         prompt = _build_prompt(pattern_type, we, claude_md_text, fix_history)
@@ -445,25 +613,14 @@ def generate_fix(waste_event_id, conn=None):
                 pattern_type=pattern_type, project=project,
             )
 
-        model = get_setting(conn, "fix_autogen_model") or DEFAULT_MODEL
-        payload = {
-            "model": model,
-            "max_tokens": MAX_TOKENS,
-            "system": [
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            "messages": [{"role": "user", "content": prompt}],
-        }
+        # Dispatch to whichever provider the user picked. _call_provider
+        # raises ValueError on any config or transport failure — catch and
+        # surface as a graceful error dict.
+        try:
+            text, model = _call_provider(prompt, conn)
+        except ValueError as e:
+            return _err(str(e), pattern_type=pattern_type, project=project)
 
-        api_resp, err = _call_anthropic(payload, api_key)
-        if err:
-            return _err(err, pattern_type=pattern_type, project=project, model_used=model)
-
-        text = _extract_text(api_resp)
         parsed, parse_err = _parse_fix_json(text)
         if parse_err:
             return _err(parse_err, pattern_type=pattern_type, project=project, model_used=model)
@@ -475,9 +632,11 @@ def generate_fix(waste_event_id, conn=None):
                 pattern_type=pattern_type, project=project, model_used=model,
             )
 
-        usage = api_resp.get("usage") if isinstance(api_resp, dict) else {}
-        prompt_tokens = int((usage or {}).get("input_tokens", 0) or 0)
-        output_tokens = int((usage or {}).get("output_tokens", 0) or 0)
+        # Token usage is not tracked by the multi-provider dispatcher
+        # (each provider returns only str). Left at 0 — Phase 2 can
+        # reintroduce usage tracking if needed.
+        prompt_tokens = 0
+        output_tokens = 0
 
         risk = (parsed.get("risk_level") or "low").lower()
         if risk not in ("low", "medium", "high"):

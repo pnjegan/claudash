@@ -44,8 +44,9 @@ Commands:
   mcp           Print MCP server settings.json snippet + run a quick test
   keys          Print dashboard_key and sync_token (sensitive — keep private)
   keys --rotate Regenerate dashboard_key (invalidates existing browser sessions)
-  keys --set-anthropic
-                (v2) Prompt for and store an Anthropic API key for fix generation
+  keys --set-provider
+                (v2) Interactive wizard — pick Anthropic / AWS Bedrock /
+                OpenAI-compatible endpoint for fix generation
   init          First-run setup wizard (3 questions, then start)
   claude-ai     Show claude.ai browser tracking status
   sync-daemon   Auto-sync browser data every 5 minutes (background)
@@ -321,6 +322,9 @@ def cmd_init():
     print(f"    Plan cost: ${cost}/mo", flush=True)
     if tokens:
         print(f"    Window: {tokens:,} tokens per 5 hours", flush=True)
+    print(flush=True)
+    print("  Fix generator (optional): claudash keys --set-provider", flush=True)
+    print("  Skip this to use Claudash without LLM features.", flush=True)
     print(flush=True)
     print("  Starting dashboard...", flush=True)
     print(flush=True)
@@ -1013,6 +1017,138 @@ def cmd_sync_daemon():
     os.execv(sys.executable, [sys.executable, daemon])
 
 
+def _prompt_secret(label):
+    """Prompt for a secret without echoing. Falls back to visible input
+    when no TTY (e.g. piped stdin). Returns stripped string or ''."""
+    try:
+        import getpass
+        return (getpass.getpass(label) or "").strip()
+    except (ImportError, EOFError, OSError):
+        try:
+            return (input(label) or "").strip()
+        except EOFError:
+            return ""
+
+
+def _prompt_line(label, default=""):
+    """Visible input, returns stripped string. Empty input returns default."""
+    try:
+        raw = input(label)
+    except EOFError:
+        raw = ""
+    raw = (raw or "").strip()
+    return raw if raw else default
+
+
+def _setup_fix_provider(force_anthropic=False):
+    """Interactive provider-setup wizard used by `keys --set-provider`
+    (and, for backwards compat, `keys --set-anthropic` which hops straight
+    to choice 1)."""
+    init_db()
+    from fix_generator import SUPPORTED_PROVIDERS
+    conn = get_conn()
+
+    if force_anthropic:
+        choice = "1"
+    else:
+        print()
+        print("  Claudash Fix Generator \u2014 Provider Setup")
+        print("  " + "\u2500" * 40)
+        print("  Each fix generation calls an LLM to write a CLAUDE.md rule.")
+        print("  Choose your provider:")
+        print()
+        print("  [1] Anthropic API (direct)")
+        print("      Cost: ~$0.003 per fix (~$0.30 per 100 fixes)")
+        print("      Setup: API key from console.anthropic.com")
+        print("      No new account needed if you already use Claude.")
+        print()
+        print("  [2] AWS Bedrock")
+        print("      Cost: Bedrock rates (check your AWS console)")
+        print("      Setup: ~/.aws/credentials + bedrock:InvokeModel permission")
+        print("      Good choice if you have existing AWS spend.")
+        print()
+        print("  [3] OpenAI-compatible endpoint")
+        print("      Cost: Depends on provider/model")
+        print("      Setup: Any OpenAI-compatible URL + optional API key")
+        print("      Works with: OpenRouter, Azure OpenAI, LM Studio, Ollama")
+        print()
+        print("  [4] Skip \u2014 I'll set this up later")
+        print("      Fix generation will be unavailable until configured.")
+        print()
+        try:
+            choice = (input("  Enter choice [1-4]: ") or "").strip()
+        except EOFError:
+            choice = "4"
+
+    if choice == "1":
+        key = _prompt_secret("  Enter Anthropic API key (starts with sk-ant-): ")
+        if not key.startswith("sk-ant-") or len(key) <= 20:
+            print("  Invalid key format. Must start with sk-ant-")
+            conn.close()
+            sys.exit(1)
+        set_setting(conn, "fix_provider", "anthropic")
+        set_setting(conn, "anthropic_api_key", key)
+        info = SUPPORTED_PROVIDERS["anthropic"]
+        print()
+        print(f"  Provider saved: {info['label']}")
+        print(f"  Cost note: {info['cost_note']}")
+        print("  Test with: claudash fix generate <waste_event_id>")
+        print()
+
+    elif choice == "2":
+        region = _prompt_line("  AWS region [us-east-1]: ", default="us-east-1")
+        # Quick boto3 import check so the user knows before they try.
+        try:
+            import boto3  # noqa: F401
+            boto3_ok = True
+        except ImportError:
+            boto3_ok = False
+        set_setting(conn, "fix_provider", "bedrock")
+        set_setting(conn, "aws_region", region)
+        info = SUPPORTED_PROVIDERS["bedrock"]
+        print()
+        print(f"  Provider saved: {info['label']} (region: {region})")
+        print(f"  Cost note: {info['cost_note']}")
+        if not boto3_ok:
+            print("  NOTE: boto3 is not installed. Install with: pip install boto3")
+        print("  Test with: claudash fix generate <waste_event_id>")
+        print()
+
+    elif choice == "3":
+        url = _prompt_line("  OpenAI-compatible URL (e.g. https://openrouter.ai/api/v1): ")
+        if not url:
+            print("  URL is required. Cancelled.")
+            conn.close()
+            sys.exit(1)
+        api_key = _prompt_secret("  API key (optional — blank for local servers): ")
+        model = _prompt_line("  Model name (e.g. anthropic/claude-sonnet-4.5, blank to configure later): ")
+        set_setting(conn, "fix_provider", "openai_compat")
+        set_setting(conn, "openai_compat_url", url)
+        set_setting(conn, "openai_compat_key", api_key)
+        set_setting(conn, "openai_compat_model", model)
+        info = SUPPORTED_PROVIDERS["openai_compat"]
+        print()
+        print(f"  Provider saved: {info['label']}")
+        print(f"  URL: {url}")
+        print(f"  Model: {model or '(unspecified — configure via settings before first generation)'}")
+        print(f"  Cost note: {info['cost_note']}")
+        print("  Test with: claudash fix generate <waste_event_id>")
+        print()
+
+    elif choice == "4":
+        set_setting(conn, "fix_provider", "")
+        print()
+        print("  Skipped. Run `claudash keys --set-provider` when ready.")
+        print("  (Claudash will continue to work without fix generation.)")
+        print()
+    else:
+        print("  Invalid choice. Cancelled.")
+        conn.close()
+        sys.exit(1)
+
+    conn.close()
+
+
 def cmd_keys():
     """Print dashboard_key and sync_token. Sensitive — do not paste into
     screenshots, chat transcripts, or shared terminals."""
@@ -1030,27 +1166,11 @@ def cmd_keys():
         print()
         return
 
-    if len(sys.argv) >= 3 and sys.argv[2] == "--set-anthropic":
-        # Prefer getpass so the key doesn't echo; fall back to input if no TTY.
-        try:
-            import getpass
-            raw = getpass.getpass("  Enter Anthropic API key (starts with sk-ant-): ")
-        except (ImportError, EOFError, OSError):
-            try:
-                raw = input("  Enter Anthropic API key (starts with sk-ant-): ")
-            except EOFError:
-                raw = ""
-        key = (raw or "").strip()
-        if not key.startswith("sk-ant-") or len(key) <= 20:
-            print("  Invalid key format. Must start with sk-ant-")
-            sys.exit(1)
-        conn = get_conn()
-        set_setting(conn, "anthropic_api_key", key)
-        conn.close()
-        print()
-        print("  Anthropic API key saved.")
-        print("  Test with: claudash fix generate <waste_event_id>")
-        print()
+    if len(sys.argv) >= 3 and sys.argv[2] in ("--set-provider", "--set-anthropic"):
+        # --set-anthropic is a hidden backwards-compat alias that goes
+        # straight to the Anthropic path.
+        force_anthropic = sys.argv[2] == "--set-anthropic"
+        _setup_fix_provider(force_anthropic=force_anthropic)
         return
 
     conn = get_conn()
