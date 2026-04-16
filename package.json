@@ -1,6 +1,6 @@
 {
   "name": "@jeganwrites/claudash",
-  "version": "1.0.15",
+  "version": "2.0.0",
   "description": "Claude Code usage intelligence dashboard",
   "bin": {
     "claudash": "./bin/claudash.js"
