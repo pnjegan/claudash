@@ -317,9 +317,13 @@ def init_db():
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
-            value TEXT
+            value TEXT,
+            updated_at INTEGER
         );
     """)
+    # BUG-005 migration: existing DBs created before updated_at was added
+    if not _column_exists(conn, "settings", "updated_at"):
+        conn.execute("ALTER TABLE settings ADD COLUMN updated_at INTEGER")
     # Seed sync_token if missing
     row = conn.execute("SELECT value FROM settings WHERE key = 'sync_token'").fetchone()
     if not row:
