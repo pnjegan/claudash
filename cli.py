@@ -36,11 +36,16 @@ Commands:
   waste         Run waste-pattern detection and print summary
   fixes         List all recorded fixes with current status
   fix add       Interactively record a new fix (captures baseline)
+  fix generate <waste_event_id>
+                (v2) Generate a CLAUDE.md rule via Anthropic API and save
+                it as a `proposed` fix. Requires anthropic_api_key setting.
   measure <id>  Capture current metrics for a fix, compute delta, print
                 a plan-aware verdict and share card
   mcp           Print MCP server settings.json snippet + run a quick test
   keys          Print dashboard_key and sync_token (sensitive — keep private)
   keys --rotate Regenerate dashboard_key (invalidates existing browser sessions)
+  keys --set-anthropic
+                (v2) Prompt for and store an Anthropic API key for fix generation
   init          First-run setup wizard (3 questions, then start)
   claude-ai     Show claude.ai browser tracking status
   sync-daemon   Auto-sync browser data every 5 minutes (background)
@@ -527,6 +532,58 @@ def cmd_fix_add():
     print()
 
 
+def cmd_fix_generate():
+    """`claudash fix generate <waste_event_id>` — v2-F4 Phase 1.
+
+    Generates a CLAUDE.md rule proposal for one waste event via the
+    Anthropic API, persists it as a `proposed` fix, and prints the
+    human-readable proposal."""
+    if len(sys.argv) < 4 or not sys.argv[3].isdigit():
+        print("Usage: python3 cli.py fix generate <waste_event_id>")
+        sys.exit(1)
+    wid = int(sys.argv[3])
+    init_db()
+    conn = get_conn()
+    from fix_generator import generate_fix, insert_generated_fix
+    gen = generate_fix(wid, conn)
+    if gen.get("error"):
+        print()
+        print(f"  Error: {gen['error']}")
+        print()
+        conn.close()
+        sys.exit(1)
+
+    fix_id = insert_generated_fix(conn, wid, gen)
+    conn.close()
+
+    print()
+    print("=== FIX PROPOSAL ===")
+    print(f"Pattern:  {gen['pattern_type']}")
+    print(f"Project:  {gen['project']}")
+    print(f"Risk:     {gen['risk_level']}")
+    print(f"Impact:   ~{gen['expected_impact_pct']}% reduction expected")
+    print()
+    print("RULE (append to CLAUDE.md):")
+    print("\u2500" * 26)
+    print(gen["rule_text"])
+    print("\u2500" * 26)
+    print()
+    print("REASONING:")
+    print(gen["reasoning"])
+    print()
+    if gen.get("settings_change"):
+        print("SETTINGS CHANGE:")
+        print(json.dumps(gen["settings_change"], indent=2))
+        print()
+    if fix_id is not None:
+        print(f"Fix saved with ID {fix_id} (status=proposed)")
+    else:
+        print("Fix could not be persisted to DB (see logs); rule is printed above.")
+    print("To apply manually: copy rule above into your project CLAUDE.md")
+    print("Phase 2 will add: claudash fix apply {fix_id}".format(fix_id=fix_id))
+    print()
+
+
 def cmd_measure():
     """Capture current metrics for a fix and print a plan-aware verdict."""
     if len(sys.argv) < 3 or not sys.argv[2].isdigit():
@@ -973,6 +1030,29 @@ def cmd_keys():
         print()
         return
 
+    if len(sys.argv) >= 3 and sys.argv[2] == "--set-anthropic":
+        # Prefer getpass so the key doesn't echo; fall back to input if no TTY.
+        try:
+            import getpass
+            raw = getpass.getpass("  Enter Anthropic API key (starts with sk-ant-): ")
+        except (ImportError, EOFError, OSError):
+            try:
+                raw = input("  Enter Anthropic API key (starts with sk-ant-): ")
+            except EOFError:
+                raw = ""
+        key = (raw or "").strip()
+        if not key.startswith("sk-ant-") or len(key) <= 20:
+            print("  Invalid key format. Must start with sk-ant-")
+            sys.exit(1)
+        conn = get_conn()
+        set_setting(conn, "anthropic_api_key", key)
+        conn.close()
+        print()
+        print("  Anthropic API key saved.")
+        print("  Test with: claudash fix generate <waste_event_id>")
+        print()
+        return
+
     conn = get_conn()
     dk = get_setting(conn, "dashboard_key") or "(not set)"
     st = get_setting(conn, "sync_token") or "(not set)"
@@ -1069,13 +1149,23 @@ def main():
 
     cmd = sys.argv[1].lower()
 
-    # Two-word commands: `fix add`
+    # Two-word commands: `fix add`, `fix generate <id>`
     if cmd == "fix":
         sub = sys.argv[2] if len(sys.argv) >= 3 else ""
         if sub == "add":
             cmd_fix_add()
             return
-        print("Usage: python3 cli.py fix add")
+        if sub == "generate":
+            cmd_fix_generate()
+            return
+        if sub in ("-h", "--help", "help", ""):
+            print("Usage:")
+            print("  python3 cli.py fix add")
+            print("  python3 cli.py fix generate <waste_event_id>")
+            sys.exit(0)
+        print("Usage:")
+        print("  python3 cli.py fix add")
+        print("  python3 cli.py fix generate <waste_event_id>")
         sys.exit(1)
 
     commands = {

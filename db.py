@@ -247,6 +247,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_fm_measured ON fix_measurements(measured_at);
     """)
 
+    # --- v2-F4 Phase 1: fixes table agentic-loop columns ---
+    for col, typedef in [
+        ("generated_by", "TEXT DEFAULT 'human'"),
+        ("generation_prompt", "TEXT"),
+        ("generation_response", "TEXT"),
+        ("applied_to_path", "TEXT"),
+        ("waste_event_id", "INTEGER"),
+    ]:
+        if not _column_exists(conn, "fixes", col):
+            conn.execute(f"ALTER TABLE fixes ADD COLUMN {col} {typedef}")
+
     # --- v2 lifecycle events (compact, subagent_spawn) ---
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS lifecycle_events (
@@ -337,6 +348,17 @@ def init_db():
         import secrets
         key = secrets.token_hex(16)
         conn.execute("INSERT INTO settings (key, value) VALUES ('dashboard_key', ?)", (key,))
+
+    # v2-F4 Phase 1: seed agentic-loop settings (never overwrite existing)
+    for _k, _v in (
+        ("anthropic_api_key", ""),
+        ("fix_autogen_enabled", "0"),
+        ("fix_autogen_model", "claude-sonnet-4-5"),
+    ):
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            (_k, _v),
+        )
 
     # Mark one-time account migration as done
     conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('account_migration_done', '1')")
