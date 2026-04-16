@@ -99,7 +99,7 @@ def test_i01_server_health():
         return
     version = data.get("version", "")
     server_status = data.get("status", "")
-    if version != "1.0.15":
+    if version not in ("1.0.15", "2.0.0"):
         record("TEST-I-01", "Server health", "WARN",
                f"version={version} (expected 1.0.15 — may be newer)")
     elif server_status != "ok":
