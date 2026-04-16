@@ -316,6 +316,29 @@ def cmd_init():
         )
         conn.commit()
 
+        # Auto-discover Claude Code data paths and seed them so new users
+        # don't inherit a hardcoded default that doesn't match their box.
+        try:
+            from scanner import discover_claude_paths
+            discovered = discover_claude_paths()
+            paths = [d["path"] for d in discovered if d.get("exists")]
+            conn.execute(
+                "UPDATE accounts SET data_paths=? WHERE account_id=?",
+                (json.dumps(paths), acct_row["account_id"]),
+            )
+            conn.commit()
+            print(flush=True)
+            if paths:
+                print(f"  Found {len(paths)} data path(s):", flush=True)
+                for p in paths:
+                    files = next((d.get("estimated_records", 0) for d in discovered if d["path"] == p), 0)
+                    print(f"    - {p}  ({files} files)", flush=True)
+            else:
+                print("  No Claude Code data paths found yet.", flush=True)
+                print("  Run Claude Code at least once, then re-run init.", flush=True)
+        except Exception as e:
+            print(f"  (auto-discover skipped: {e})", flush=True)
+
     print(flush=True)
     print("  Dashboard configured!", flush=True)
     print(f"    Account: {name} ({plan.title()})", flush=True)

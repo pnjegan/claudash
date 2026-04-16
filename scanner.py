@@ -550,15 +550,33 @@ def discover_claude_paths():
     except OSError:
         pass
 
+    default_path = os.path.join(home, ".claude", "projects") + "/"
+
     result = []
+    kept = set()
     for p in sorted(found):
         count = 0
         for root, dirs, files in os.walk(p):
             for fname in files:
                 if fname.endswith(".jsonl"):
                     count += 1
-        result.append({"path": p, "exists": True, "estimated_records": count})
-    return result
+        # Only keep paths that actually contain JSONL files, unless it's the
+        # standard default (which new users will have empty until they run
+        # Claude Code for the first time).
+        if count > 0 or p == default_path:
+            result.append({"path": p, "exists": True, "estimated_records": count})
+            kept.add(p)
+
+    # Always surface the default path as a suggestion, even if it's missing
+    # on disk — new installs should see it so the user can accept it.
+    if default_path not in kept:
+        result.insert(0, {
+            "path": default_path,
+            "exists": os.path.isdir(default_path),
+            "estimated_records": 0,
+        })
+
+    return sorted(result, key=lambda r: r["path"])
 
 
 # ─── v2-F5: MCP warning queue generator ─────────────────────────

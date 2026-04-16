@@ -619,10 +619,11 @@ function authHeaders() {
         '</div>' +
 
         '<div class="paths-list">' +
-          '<div class="k">Data paths</div>' +
+          '<div class="k">Data paths <button class="btn-ghost" data-discover-btn="' + esc(a.account_id) + '" style="margin-left:8px;padding:2px 8px;font-size:11px">Auto-discover</button></div>' +
           paths.map(p =>
             '<div class="path-row"><span class="path-status unknown" data-pathcheck="' + esc(a.account_id) + '::' + esc(p) + '"></span><span>' + esc(p) + '</span></div>'
           ).join('') +
+          '<div class="discover-result" id="discover-result-' + esc(a.account_id) + '"></div>' +
         '</div>' +
 
         (projs.length ?
@@ -713,6 +714,51 @@ function authHeaders() {
         else el.className = 'path-status unknown';
       }).catch(() => {});
     });
+
+    // Auto-discover data paths (per-account button on the card)
+    document.querySelectorAll('[data-discover-btn]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.discoverBtn;
+      const resultEl = $('discover-result-' + id);
+      const acct = accounts.find(x => x.account_id === id);
+      const existing = (acct && acct.data_paths) ? acct.data_paths : [];
+      const prev = b.textContent;
+      b.disabled = true; b.textContent = 'Discovering…';
+      fetch('/api/accounts/discover', {method: 'POST', headers: authHeaders(), body: '{}'})
+        .then(r => r.json())
+        .then(d => {
+          b.disabled = false; b.textContent = prev;
+          const paths = d.discovered_paths || [];
+          const newOnly = paths.filter(p => !existing.includes(p.path));
+          if (!newOnly.length) {
+            resultEl.innerHTML = '<div style="margin-top:8px;font-size:12px;color:var(--text-muted)">No new paths found — already tracking all discovered paths.</div>';
+            return;
+          }
+          resultEl.innerHTML =
+            '<div style="margin-top:8px;font-size:12px;color:var(--text-muted)">Found ' + newOnly.length + ' new path(s):</div>' +
+            newOnly.map(p =>
+              '<label style="display:block;margin:4px 0;font-size:12px"><input type="checkbox" data-discover-check="' + esc(id) + '" value="' + esc(p.path) + '" checked style="margin-right:6px"> ' +
+              esc(p.path) + ' <span style="color:var(--text-muted)">(' + (p.estimated_records || 0) + ' files)</span></label>'
+            ).join('') +
+            '<button class="btn-primary" data-discover-apply="' + esc(id) + '" style="margin-top:6px;padding:4px 12px;font-size:12px">Add selected</button>';
+          resultEl.querySelectorAll('[data-discover-apply]').forEach(ab => ab.addEventListener('click', () => {
+            const checks = resultEl.querySelectorAll('[data-discover-check]:checked');
+            const toAdd = Array.from(checks).map(c => c.value);
+            if (!toAdd.length) return;
+            const merged = existing.concat(toAdd);
+            fetch('/api/accounts/' + id, {
+              method: 'PUT', headers: authHeaders(),
+              body: JSON.stringify({data_paths: merged})
+            })
+              .then(r => r.json())
+              .then(() => { showMsg('Added ' + toAdd.length + ' path(s)', 'success'); load(); })
+              .catch(() => showMsg('Failed to update paths', 'error'));
+          }));
+        })
+        .catch(() => {
+          b.disabled = false; b.textContent = prev;
+          resultEl.innerHTML = '<div style="margin-top:8px;font-size:12px;color:var(--danger)">Discovery failed.</div>';
+        });
+    }));
 
     // Buttons
     document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
