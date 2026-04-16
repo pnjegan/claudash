@@ -106,11 +106,19 @@ def get_project_plan_info(conn, project):
 
 # ─── Baseline capture ────────────────────────────────────────────
 
-def capture_baseline(conn, project, days_window=7):
-    """Snapshot the project's key metrics right now. Safe to call repeatedly —
-    the snapshot is self-contained and travels inside `fixes.baseline_json`."""
+def capture_baseline(conn, project, days_window=7, since_override=None):
+    """Snapshot the project's key metrics. Safe to call repeatedly — the
+    snapshot is self-contained and travels inside `fixes.baseline_json`.
+
+    `since_override`: when provided (unix ts), overrides the default
+    "last N days" window. Used at measure time to scope the current
+    snapshot to sessions AFTER the fix was applied — without it, every
+    fix for the same project gets an identical current snapshot."""
     acct_id, plan, plan_cost = get_project_plan_info(conn, project)
-    since = int(time.time()) - (days_window * 86400)
+    if since_override is not None:
+        since = int(since_override)
+    else:
+        since = int(time.time()) - (days_window * 86400)
 
     # Aggregate session rows for this project in the window
     agg = conn.execute(
@@ -287,7 +295,14 @@ def compute_delta(conn, fix_id):
     plan_type = baseline.get("plan_type", "max")
     plan_cost = baseline.get("plan_cost_usd", 0)
 
-    current = capture_baseline(conn, project, days_window=baseline.get("days_window", 7))
+    # BUG 1 fix: current snapshot must be scoped to sessions AFTER the fix
+    # was recorded, not "last 7 days" of the project — otherwise every fix
+    # for the same project returns identical numbers.
+    current = capture_baseline(
+        conn, project,
+        days_window=baseline.get("days_window", 7),
+        since_override=fix["created_at"] or 0,
+    )
 
     # Sessions since the fix was recorded (ANY row belonging to a session_id
     # with a timestamp after fix.created_at)
@@ -332,11 +347,15 @@ def compute_delta(conn, fix_id):
         0,
     )
 
-    # API-equivalent monthly savings — always computed, reported as a
-    # distinct field, never framed as real dollars for flat-plan users.
-    before_month = before_total_cost / max(baseline.get("days_window", 7), 1) * 30.0
-    after_month = after_total_cost / max(current.get("days_window", 7), 1) * 30.0
-    api_equivalent_savings_monthly = round(max(before_month - after_month, 0), 2)
+    # API-equivalent monthly savings — per-session efficiency × expected
+    # monthly session volume. The old "total_cost / days_window × 30"
+    # formulation collapsed to 0 when the current window covered only
+    # a fraction of the baseline window (BUG 2).
+    baseline_window = max(baseline.get("days_window", 7), 1)
+    baseline_sessions = baseline.get("sessions_count", 0) or 0
+    sessions_per_month = (baseline_sessions / baseline_window) * 30.0
+    per_session_saving = max(before_cps - after_cps, 0)
+    api_equivalent_savings_monthly = round(per_session_saving * sessions_per_month, 2)
 
     # Output multiplier
     if before_fpw > 0 and after_fpw > 0:
@@ -466,7 +485,7 @@ def build_share_card(fix, latest_measurement):
     if not latest_measurement:
         lines.append("(No measurements yet — run `cli.py measure` after ≥7 days.)")
         lines.append("")
-        lines.append("Detected by Claudash — github.com/yourusername/claudash")
+        lines.append("Detected by Claudash — github.com/pnjegan/claudash")
         lines.append(border)
         return "\n".join(lines)
 
@@ -497,7 +516,7 @@ def build_share_card(fix, latest_measurement):
         lines.append(f"• Monthly savings: ~${monthly:.0f}/mo")
 
     lines.append("")
-    lines.append("Detected by Claudash — github.com/yourusername/claudash")
+    lines.append("Detected by Claudash — github.com/pnjegan/claudash")
     lines.append(border)
     return "\n".join(lines)
 

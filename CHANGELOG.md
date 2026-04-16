@@ -616,3 +616,267 @@
   Why deferred: Needs manual npm login + publish step
 - Efficiency score of 42/F reflects real data: floundering rate scored 0/100, model right-sizing 21/100
   Why: These are real problems to fix, not bugs in the score
+
+## [2026-04-14] Session 10 — Security audit, 17 fixes shipped, INTERNALS.md, versions 1.0.12 → 1.0.15
+
+### Fixed
+- **HIGH: raw_response leaked unauthenticated** — `/api/claude-ai/accounts` and `/api/claude-ai/accounts/<id>/history` returned the full Anthropic usage JSON blob (org UUIDs, plan internals, occasional first name/email). `session_key` was scrubbed; `raw_response` was not. Now stripped at the DB-read layer.
+  Files: db.py (get_latest_claude_ai_snapshot, get_claude_ai_snapshot_history)
+
+- **HIGH: non-timing-safe key comparison** — `received != stored.strip()` for both `dashboard_key` and `sync_token` was vulnerable to a local timing side-channel. Replaced with `hmac.compare_digest`.
+  Files: server.py:_require_dashboard_key, _handle_sync
+
+- **HIGH: no CSRF/Origin check on mutating endpoints** — malicious browser pages could POST to `127.0.0.1:8080` via plain HTML forms (no preflight). Added `_check_origin()` on do_POST/do_PUT/do_DELETE; rejects when Origin is present and not in the localhost allow-list.
+  Files: server.py
+
+- **MEDIUM: unvalidated data_paths** — admin could set `data_paths=["/"]` and scanner would walk the entire filesystem reading every `.jsonl`. Added `_validate_data_paths()` requiring each path to exist as a directory and resolve within `~` or `/root`.
+  Files: db.py:create_account/update_account
+
+- **MEDIUM: raw exception strings in /api/data** — `{"error": str(e)}` leaked SQL fragments and FS paths. Now returns `"internal error"`, real exception logged server-side only.
+  Files: server.py:_get_data
+
+- **MEDIUM: /api/accounts/<id>/preview leaked FS layout** — `expanded` field exposed absolute paths to unauth callers. Now returns only `path`/`exists`/`jsonl_files`.
+  Files: server.py
+
+- **MEDIUM: unbounded _data_cache** — module dict keyed by unvalidated `account` query param. Replaced with locked `OrderedDict` LRU capped at 64 entries; account validated against slug regex before caching.
+  Files: server.py (_cache_get, _cache_put, _cache_clear)
+
+- **MEDIUM: overlapping scans race** — periodic thread + POST `/api/scan` + per-account scan had no lock. Added `threading.Lock` in scanner; endpoints return 409 `"scan already running"` instead of queueing.
+  Files: scanner.py:_scan_lock, server.py
+
+- **MEDIUM: file paths persisted in waste_events.detail_json** — leaked project FS layout via `/api/real-story`. Now strips to `os.path.basename()` before persisting.
+  Files: waste_patterns.py:_detect_repeated_reads
+
+- **MEDIUM: missing composite indexes** — `(account, timestamp)`, `(project, timestamp)`, `(account, project)` added; analyzer queries no longer scan one index then filter.
+  Files: db.py:init_db
+
+- **MEDIUM: N+1 in /api/accounts** — one SELECT per account replaced with single GROUP BY.
+  Files: server.py
+
+- **MEDIUM: O(projects × rows) inner loop in project_metrics** — `cache_roi` now accumulated in the first pass over rows_30d.
+  Files: analyzer.py
+
+- **LOW: /tools/mac-sync.py served unauthenticated** — gated behind `_require_dashboard_key()`.
+  Files: server.py
+
+- **LOW: port string-concatenated into execSync** — added `^\d{1,5}$` + 1–65535 range validation in `bin/claudash.js`.
+  Files: bin/claudash.js
+
+- **LOW: scanner accumulated all rows in memory** — flushes every 10k rows now (BATCH_FLUSH_SIZE).
+  Files: scanner.py:scan_jsonl_file
+
+- **LOW: zombie threads from thread.join(timeout)** — replaced with `ThreadPoolExecutor(max_workers=4)` for analysis timeout.
+  Files: server.py
+
+- **LOW: unlocked module globals in claude_ai_tracker** — `_account_statuses`/`_last_poll_time` mutated cross-thread without lock. Added `_state_lock` + `_set_status()` helper.
+  Files: claude_ai_tracker.py
+
+- **UX: silent auto-update on every launch** — `bin/claudash.js` ran `git pull` against main on every invocation. Now gated behind `--update` flag.
+  Files: bin/claudash.js
+
+- **UX: hardcoded "Claudash v1.0" in dashboard footer** — now reads dynamic version from `/api/data` payload.
+  Files: server.py:_build_data, templates/dashboard.html:1413
+
+- **UX: server logged every GET request** — `log_message` now suppresses routine GETs; only POST/PUT/DELETE and 4xx/5xx are logged.
+  Files: server.py
+
+### Added
+- **Setup auto-detection from ~/.claude/.credentials.json** — `_detect_from_credentials()` reads `subscriptionType` and best-effort email from the OAuth JWT. On confirmation skips the entire 3-question wizard and auto-names the account from the email local-part.
+  Files: cli.py:_detect_from_credentials, cmd_init
+
+- **README "Running Claudash across multiple machines" section** — explains the rsync+cron pattern for unifying multi-machine usage into one dashboard. Explicit warning against running multiple instances.
+  Files: README.md
+
+- **INTERNALS.md** — 957-line technical document covering JSONL format, scanner internals, DB schema, analyzer formulas, all 4 waste patterns, all 14 insight rules, efficiency score dimensions, browser tracking flow, MCP server protocol, fix tracker baseline/measure loop. Every claim sourced to file:line. Honest call-outs of rough edges. Not yet committed.
+  Files: INTERNALS.md (uncommitted)
+
+### Architecture Decisions
+- **Trust model is localhost-only** — 127.0.0.1 bind is the primary boundary; auth + origin check + timing-safe compare are defense-in-depth for co-tenant/local-malware scenarios. Documented in INTERNALS.
+  Impact: future endpoints don't need full session machinery, but MUST honor `_require_dashboard_key()` on any mutation.
+
+- **Manual `--update` instead of auto-pull** — users get version churn under their control via `npm update -g @jeganwrites/claudash`, not silent `git pull`.
+  Impact: package consumers and git-clone consumers are now on the same upgrade cadence.
+
+### Released
+- **v1.0.12** (commit 3a32b8b) — D1, A1, A2, N1
+- **v1.0.13** (commit a0309ac) — D2 D4 F3 V2 S2 P2 Q1 Q2 Q3 A3 I4 S1 V3 V4
+- **v1.0.14** (commit a24b305) — dynamic version in footer + log noise reduction
+- **v1.0.15** (commit c15ed10) — auto-detect plan + multi-machine docs
+
+### Known Issues / Not Done
+- **`ecosystem.config.js` has unrelated uncommitted changes** — pre-existed at session start (PM2 config refactor: `script: 'cli.py'` + `interpreter: 'python3'` + `__dirname` cwd). Stashed/popped around each `npm version` bump. Untouched on disk.
+  Why deferred: not part of this session's scope; user should review and commit/discard intentionally.
+
+- **INTERNALS.md not committed** — written and saved at `/root/projects/jk-usage-dashboard/INTERNALS.md` for review.
+  Why deferred: user wanted to verify content first.
+
+- **`.npmrc` near-miss** — npm auth token in `.npmrc` was untracked at session start, briefly entered staging during `git add -A` for the bundled security fixes, was caught and reset before push, added to `.gitignore`. Token was never pushed but should be considered briefly exposed in local git index — rotate at https://www.npmjs.com/settings/jeganwrites/tokens for safety.
+  Why deferred: user action required (cannot rotate npm tokens for the user).
+
+- **C2 (claude.ai session_key plaintext in SQLite)** — chmod 0600 on DB mitigates for single-user local. On shared VPS would need OS-keyring encryption.
+  Why deferred: out of scope for single-user local model; document only.
+
+- **D3 (/health endpoint info disclosure)** — version + account list exposed unauth. Localhost-only, low impact.
+  Why deferred: useful for humans/monitoring; not worth removing.
+
+- **Q4/Q5/Q6/V6** (LOW perf items: SELECT * narrowing, MCP query caching, `_read_body` 100KB cap)
+  Why deferred: not user-visible at current scale.
+
+## [2026-04-15] Session 11 — v2.0 PRD drafted, 3 fix_tracker bugs fixed (uncommitted)
+
+### Fixed
+- **BUG 1: measure() returned identical numbers for every fix on a project** — `compute_delta` called `capture_baseline` with no time-scoping, so the "current" snapshot for every fix was just "last 7 days of the project". Added `since_override` param; `compute_delta` now passes `fix.created_at` so each fix only measures sessions that happened AFTER it was applied.
+  Files: fix_tracker.py:capture_baseline, compute_delta
+
+- **BUG 2: api_equivalent_savings_monthly always $0** — old formula `total_cost / days_window × 30` collapsed to zero when the post-fix window covered fewer days than the baseline. Replaced with `(baseline_cost_per_session − current_cost_per_session) × sessions_per_month`, where `sessions_per_month = baseline.sessions_count / baseline.days_window × 30`.
+  Files: fix_tracker.py:compute_delta
+
+- **BUG 3: share card placeholder URL** — both share-card footers said `github.com/yourusername/claudash`. Now `github.com/pnjegan/claudash`.
+  Files: fix_tracker.py:build_share_card (2 occurrences)
+
+### Added
+- **CLAUDASH_V2_PRD.md** — product requirements doc for v2.0 "Agentic Fix Loop". Covers the 4-stage loop (detect → generate → apply → measure), 5 new `fixes` columns, 4 pattern-specific prompt templates, Anthropic SDK integration with prompt caching, security model for API key storage, phased delivery (Phase 1 CLI → Phase 2 applier+UI → Phase 3 closed loop), success metrics, and open questions.
+  Files: CLAUDASH_V2_PRD.md (uncommitted)
+
+### Architecture Decisions
+- **v2 fix generator uses direct Anthropic SDK, not Claude Code** — generation is a bounded one-shot task with predictable prompt shape; Sonnet + ephemeral cache_control is cheaper and faster than routing through an agent. Keeps v2 compatible with users who don't have Claude Code installed (e.g. claude.ai-only users who still want fix suggestions from their waste events).
+  Impact: new `anthropic_api_key` setting required; graceful offline fallback to manual `cmd_fix_add()`.
+
+- **Generation is not autonomous in v2.0** — every CLAUDE.md write requires explicit human approval via dashboard click or CLI `fix apply`. Corrective regeneration on `verdict='regressed'` is scoped but still human-gated.
+  Impact: rules out "self-healing mode" as a v2 scope creep target; defers it to v2.x.
+
+### Known Issues / Not Done
+- **3 bug fixes in fix_tracker.py uncommitted** — compile-clean, diff shown, awaiting commit+push together with the PRD.
+  Why deferred: user wanted to review before starting Phase 1 implementation.
+
+- **CLAUDASH_V2_PRD.md uncommitted**
+  Why deferred: same — pending user sign-off before code lands.
+
+- **INTERNALS.md still uncommitted** (carried from Session 10)
+- **`ecosystem.config.js` still dirty** (carried from Session 10)
+- **Rotate npm token** (carried from Session 10 — near-miss, never pushed)
+- **Phase 1 of v2 not yet started** — db.py schema migration + fix_generator.py + CLI wiring all planned in the PRD; ready to begin on GO.
+
+## [2026-04-16] Session 12 — Claudash v2.0 shipped (F1–F7)
+
+### Fixed
+- **BUG-002 (periodic scan didn't regenerate insights)** — scanner `_run` loop now calls `generate_insights()` after `scan_all()` so dashboard insights stay fresh on the background cadence.
+  Files: scanner.py
+
+- **BUG-003 (ghost `floundering_detected` insights)** — addressed as part of the insights pipeline refresh.
+  Files: insights.py
+
+- **BUG-005 (settings.updated_at missing from init_db)** — added column to CREATE TABLE + idempotent ALTER migration. Unblocked F4.
+  Files: db.py (commit 1a0a432)
+
+- **PM2 takeover of dashboard** — live server was a crontab `@reboot` PID (1599127), not PM2-managed; PM2's own instance was crashlooping. Killed orphan PID, removed crontab line, `pm2 start ecosystem.config.js`, `pm2 save`. Dashboard now survives reboot via PM2 + `pm2-root.service` systemd unit.
+  Files: ecosystem.config.js, crontab
+
+### Added
+- **F1 — Session lifecycle event tracking** (compact + subagent_spawn). Filters to assistant messages with non-zero tokens to avoid 14k spurious tool_result compact events.
+  Files: scanner.py (detect_lifecycle_events, scan_lifecycle_events), db.py (lifecycle_events table + indexes + 3 new sessions columns), analyzer.py (lifecycle_by_project, lifecycle_summary) (commit c54bf63)
+
+- **F2 — Context rot visualization** — bucketed output/input ratio with inflection detection, inline SVG chart (viewBox 400×100 polyline + dashed inflection line).
+  Files: analyzer.py (compute_context_rot), templates/dashboard.html (renderContextRotBlock) (commit 8654ed1)
+
+- **F3 — Bad compact detector** — regex signals over 5 bad-compact patterns, gated to context_pct>60, 2+ signal match. Insights rule `BAD_COMPACT_DETECTED` with project-aware `/compact Focus on:` suggestions.
+  Files: waste_patterns.py, insights.py, config.py (COMPACT_INSTRUCTIONS) (commit 8654ed1)
+
+- **F4 Phase 1 — Fix generator** (multi-provider: Anthropic / Bedrock / OpenAI-compat). boto3 lazy-imported inside `_call_bedrock` only — zero-pip-dep core preserved. CLI `fix generate <id>` + `keys --set-provider` wizard. Cost transparency in README.
+  Files: fix_generator.py (new, 444 lines), cli.py, db.py (5 new fixes columns + 8 settings seeds), README.md (commits eec74b8, 1641300)
+
+- **F5 — Bidirectional MCP** (5 write-side tools: trigger_scan, report_waste, generate_fix, dismiss_insight, get_warnings + `mcp_warnings` queue with 6h dedup).
+  Files: mcp_server.py, db.py (mcp_warnings table), scanner.py (generate_mcp_warnings — 4 rules) (commit d6a33fe)
+
+- **F6 — Streaming cost meter** — SSE `/api/stream/cost` (60s deadline, 10s early-close, broken-pipe handling), `/api/hooks/cost-event` POST, pre/post hook scripts (pre=keepalive, post=accumulate to avoid double-count), live widget top-right of dashboard with auto-reconnect.
+  Files: server.py, hooks/pre_tool_use.sh + post_tool_use.sh (new, chmod +x), templates/dashboard.html, docs/HOOKS_SETUP.md (commit fb46ba9)
+
+- **F7 — Per-project autoCompactThreshold recommendations** — Rules A–E over lifecycle + bad_compact data. Dashboard threshold block with "Copy settings.json" / "Copy CLAUDE.md rule" buttons. Embedded in 3 endpoints (`/api/recommendations`, `/api/lifecycle`, `/api/data.recommendations`) for one-fetch render.
+  Files: analyzer.py (recommend_compact_threshold, recommend_compact_all), server.py, templates/dashboard.html (renderThresholdBlock) (commit 8c3db4d)
+
+### Architecture Decisions
+- **Multi-provider LLM with lazy boto3 import** — preserves zero-pip-dep invariant for the core; only users who pick Bedrock incur the dep.
+  Impact: Bedrock is opt-in; default (Anthropic) stays stdlib-only.
+
+- **F6 pre/post hook split** — pre=keepalive only (refresh last_event_at/last_tool), post=accumulate cost + tool_count + floundering counter. Prevents double-counting per tool.
+  Impact: pre-hook has no accounting logic; all cost math lives post-hook.
+
+- **F7 recommendations embedded in 3 places** — avoids extra fetch round-trip for dashboard render.
+  Impact: slight denormalization; one-shot dashboard payload.
+
+- **PM2-managed dashboard, not crontab** — single source of truth for lifecycle; `pm2 save` + `pm2-root.service` systemd unit handles reboot survival.
+  Impact: no more orphan @reboot processes.
+
+### Known Issues / Not Done
+- **F4 Phase 2 deferred** — `fix_applier.py` (CLAUDE.md write + backup), CLI `fix apply/preview/reject`, `POST /api/fixes/<id>/apply`, dashboard diff modal.
+  Why deferred: user explicitly scoped v2 demo as "generator CLI works — enough for portfolio demo"; awaiting detailed spec for Phase 2.
+
+- **F7 recommendations uniformly 0.70** across all 6 projects (Rule D fires everywhere) — F1's compact heuristic catches subagent mid-task context drops (avg ctx 16–44%), not real user `/compact` events (70–90%). Fidelity will improve as real /compact data accumulates.
+
+- **F3 bad_compact detector: 0 matches** on current corpus — documented transparently; all candidate compacts (>60% ctx) were subagent drops where user messages preceded compact timestamps.
+
+- **Uncommitted tree state** — `fix_tracker.py` (3 Session-11 bug fixes), `ecosystem.config.js` (PM2 config tweaks this session), `CLAUDASH_V2_PRD.md`, `INTERNALS.md`.
+  Why deferred: not part of any v2 feature commit; user hasn't asked to commit these yet.
+
+- **Rotate npm token** (carried from Session 10 — near-miss, never pushed).
+
+## [2026-04-16] Session 13 — Complete writeup (2,113 lines) + auto-discover data paths
+
+### Fixed
+- **`discover_claude_paths()` returned paths with 0 JSONL files** → now only returns paths with ≥1 JSONL file, always keeps `~/.claude/projects/` as default for new installs.
+  Files: scanner.py (discover_claude_paths)
+
+- **`cmd_init()` never populated data_paths** → new users inherited whatever `config.py` seeded. Now calls `discover_claude_paths()` after account UPDATE, overwrites `data_paths` with the discovered set, prints each path with its JSONL file count.
+  Files: cli.py (cmd_init)
+
+- **Live DB had stale data_paths** — `personal_max` had `/root/.claude-personal/projects/` (doesn't exist on this box, scanner logged skip warnings), `test_acct` had `/tmp/nonexistent/`. Cleaned via safe `os.path.isdir` check that preserves the default path even if missing.
+  Files: data/usage.db (live only — no schema change)
+
+- **7 factual errors in CLAUDASH_COMPLETE_WRITEUP.md** verified against source before fixing:
+  1. API route table had wrong paths (`/api/analysis`, `/sse/cost-meter`, `/api/compact-recommendations`, `/api/browser-accounts`) → replaced with the 26 actual routes from server.py
+  2. `_call_anthropic` was documented as using "anthropic Python SDK" → actually `urllib.request` stdlib with `cache_control: ephemeral`
+  3. MCP registration path was `~/.claude/claude.json` → actually `~/.claude/settings.json` (per cli.py:698 and mcp_server.py:5)
+  4. `mac_sync_mode` documented as a "stub for macOS Keychain" → actually a working flag that suppresses VPS-side polling so data arrives via push from `tools/mac-sync.py` (claude_ai_tracker.py:218/289)
+  5. Floundering described as "included in the 56 repeated_reads events" → actually 0 events, a success metric post-Apr 11 CLAUDE.md rules
+  6. Missing "Built in One Session" narrative for v2 F1-F7 shipping in a single day
+  7. Rules A-E for `recommend_compact_threshold()` were aspirational → replaced with the actual 5 rules from analyzer.py (no-data/late/good-bad/too-early/healthy)
+  Files: CLAUDASH_COMPLETE_WRITEUP.md
+
+### Added
+- **CLAUDASH_COMPLETE_WRITEUP.md** (2,113 lines) — standalone technical and product narrative: founder story, tech stack rationale, architecture diagram, JSONL format deep-dive, every v1 and v2 feature with real DB numbers, all 18 tables, all 26 API endpoints, all 10 MCP tools, 10-step learning path, honest gap list. Pushed to GitHub so portfolio readers can fetch it directly.
+  Files: CLAUDASH_COMPLETE_WRITEUP.md
+
+- **Appendix K — LLM Provider Guide**: Groq (free tier, recommended for new users), AWS Bedrock (for existing AWS customers), Anthropic direct (~$0.003/fix). Privacy note enumerating exactly what is and isn't sent to the LLM.
+  Files: CLAUDASH_COMPLETE_WRITEUP.md
+
+- **Appendix L — Prioritized Next Steps** (P1-P7): Groq live-test, compact-detector tokens_after filter, F4 Phase 2 applier, context-rot formula fix, npm 2.0 publish, README screenshot, fix-measurement dedup.
+  Files: CLAUDASH_COMPLETE_WRITEUP.md
+
+- **Per-account "Auto-discover" button** on the Accounts tab. Calls `POST /api/accounts/discover` (endpoint already existed), shows new paths not already tracked with checkboxes + file counts, and `PUT /api/accounts/{id}` with merged data_paths on apply. Uses existing `authHeaders()` and `showMsg()` patterns.
+  Files: templates/accounts.html (renderCard data-paths block + wireCardEvents handler)
+
+### Architecture Decisions
+- **Auto-discover at init-time, not at seed-time** — `config.py` still ships `data_paths=["~/.claude/projects/"]` as the default seed, but `cmd_init()` immediately overrides it with discovery results. This is strictly better than seeding `[]` because it's a one-line discovery call and it handles multi-install scenarios (`.claude-work`, `.claude-personal`, macOS `~/Library/Application Support/Claude/projects`) that a static default can't.
+  Impact: fresh installs no longer inherit a hardcoded single path; the Auto-discover button is also available anytime post-init.
+
+- **Default path always surfaced in discovery results** — `~/.claude/projects/` is returned even if empty/missing so new users who haven't run Claude Code yet still see it as a suggestion. All other paths require ≥1 JSONL file to appear.
+  Impact: discover results are trustworthy — every non-default entry has real data.
+
+- **Correction pass first, then new work** — the CLAUDASH_COMPLETE_WRITEUP.md errors were caught by verifying each claim against source before editing (not trusting the user's premise blindly). The `mac_sync_mode` "premise was wrong" discovery during the data_paths prompt prevented me from implementing a duplicate `_discover_data_paths()` when `scanner.discover_claude_paths()` already existed.
+  Impact: established pattern of reading source before applying spec changes; avoided shipping either a documentation contradiction or duplicate code.
+
+### Known Issues / Not Done
+- **F4 Phase 2** (fix_applier.py) still deferred — awaiting explicit spec per the earlier user decision.
+  Why deferred: user scoped v2 demo as "generator CLI works — enough for portfolio demo".
+
+- **`config.py` default seed still has hardcoded `~/.claude/projects/`** — not changed to `[]` because `cmd_init()` now overwrites it with discovery results anyway.
+  Why deferred: behavior is equivalent in practice; changing the config invalidates the seeded-before-init code path.
+
+- **`claudash.db` artifact** from running `cli.py scan` outside the project dir at some point — untracked file, not committed. Harmless.
+  Why deferred: cleanup is one `rm` but not in scope.
+
+- **F7 recommendations still uniformly 0.70** across all 6 projects (Rule D fires everywhere) — fix requires adding `tokens_after > 1000` filter in `detect_lifecycle_events()`, documented as Appendix L P2.
+  Why deferred: separate 30-minute task, user hasn't triggered it yet.
+
+- **INTERNALS.md, CLAUDASH_V2_PRD.md, ecosystem.config.js, fix_tracker.py** — carried uncommitted from earlier sessions. Not touched this session.
+  Why deferred: outside this session's scope.
