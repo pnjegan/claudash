@@ -33,6 +33,7 @@ from _version import VERSION
 from analyzer import (
     full_analysis, project_metrics, window_intelligence, trend_metrics,
     lifecycle_summary, compute_context_rot, context_rot_by_project,
+    recommend_compact_threshold, recommend_compact_all,
 )
 from scanner import scan_all, get_last_scan_time, preview_paths, discover_claude_paths, is_scan_running
 from insights import generate_insights
@@ -501,6 +502,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             conn = get_conn()
             try:
                 data = lifecycle_summary(conn, project, days)
+            finally:
+                conn.close()
+            self._serve_json(data)
+
+        elif path == "/api/recommendations":
+            project = params.get("project", [None])[0]
+            days_raw = params.get("days", ["30"])[0]
+            try:
+                days = max(1, min(int(days_raw), 365))
+            except ValueError:
+                days = 30
+            if project and not re.match(r"^[A-Za-z0-9_\- ]{1,64}$", project):
+                self._serve_json({"error": "invalid project"}, 400)
+                return
+            conn = get_conn()
+            try:
+                if project:
+                    data = recommend_compact_threshold(conn, project, days)
+                else:
+                    data = recommend_compact_all(conn, days)
             finally:
                 conn.close()
             self._serve_json(data)

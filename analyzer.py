@@ -816,6 +816,167 @@ def lifecycle_by_project(conn, days=30):
     return result
 
 
+# ── autoCompactThreshold recommendations (v2-F7) ──
+
+_F7_DEFAULT_THRESHOLD = 0.70
+_F7_DEFAULT_CLAUDE_MD = (
+    "When context reaches 70%, run /compact with a focused description "
+    "of the current task before continuing."
+)
+
+
+def _f7_fallback(project, compact_count=0, bad_compact_count=0,
+                 reasoning=None):
+    pct = int(round(_F7_DEFAULT_THRESHOLD * 100))
+    return {
+        "project": project or "",
+        "recommended_threshold": _F7_DEFAULT_THRESHOLD,
+        "recommended_threshold_pct": pct,
+        "current_avg_compact_pct": 0.0,
+        "compact_count": compact_count,
+        "bad_compact_count": bad_compact_count,
+        "confidence": "low",
+        "reasoning": reasoning or (
+            "No compact history yet. 0.70 is a safe default that balances "
+            "context depth with quality."
+        ),
+        "settings_json": json.dumps(
+            {"autoCompactThreshold": _F7_DEFAULT_THRESHOLD}, indent=2
+        ),
+        "settings_json_claude_md": _F7_DEFAULT_CLAUDE_MD,
+        "data_sufficient": False,
+    }
+
+
+def recommend_compact_threshold(conn, project, days=30):
+    """Analyse compact timing for one project and recommend an
+    autoCompactThreshold setting. Returns a dict with 11 fields; never
+    raises — falls back to a safe default on any error."""
+    try:
+        if not project or not isinstance(project, str):
+            return _f7_fallback(project)
+
+        since = _now() - (days * 86400)
+
+        rows = conn.execute(
+            "SELECT context_pct_at_event FROM lifecycle_events "
+            "WHERE event_type = 'compact' AND project = ? "
+            "  AND timestamp >= ? AND context_pct_at_event IS NOT NULL",
+            (project, since),
+        ).fetchall()
+        pcts = [r[0] for r in rows if r[0] is not None]
+        compact_count = len(pcts)
+
+        bad_row = conn.execute(
+            "SELECT COUNT(*) FROM waste_events "
+            "WHERE pattern_type = 'bad_compact' AND project = ? "
+            "  AND detected_at >= ?",
+            (project, since),
+        ).fetchone()
+        bad_compact_count = (bad_row[0] if bad_row else 0) or 0
+
+        # Rule E: <3 events → insufficient data, safe default
+        if compact_count < 3:
+            fb = _f7_fallback(
+                project, compact_count, bad_compact_count,
+                reasoning=(
+                    "Not enough compact events to recommend yet "
+                    f"(need 3+, have {compact_count}). 0.70 is a safe "
+                    "default until more data accumulates."
+                ),
+            )
+            return fb
+
+        avg_pct = sum(pcts) / len(pcts)
+
+        # Rules A–D
+        if avg_pct > 80:
+            # Rule A — late compaction
+            recommended = 0.65
+            reasoning = (
+                f"Your {project} sessions compact at avg {avg_pct:.0f}% — "
+                "too late. Setting 0.65 gives a 15% safety buffer before "
+                "context rot sets in."
+            )
+        elif 60 <= avg_pct <= 80 and bad_compact_count > 0:
+            # Rule B — good timing but bad compacts: compact 10% earlier
+            recommended = round(avg_pct / 100 - 0.10, 2)
+            # Safety clamp in case of extreme outliers
+            recommended = max(0.30, min(recommended, 0.90))
+            reasoning = (
+                "Bad compacts detected — compacting slightly earlier gives "
+                "more context for a quality summary."
+            )
+        elif 60 <= avg_pct <= 80 and bad_compact_count == 0:
+            # Rule C — healthy, formalise current pattern
+            recommended = round(avg_pct / 100, 2)
+            reasoning = (
+                "Your compact timing looks healthy. This setting formalizes "
+                "your current natural pattern."
+            )
+        else:
+            # Rule D — too early (avg < 60%)
+            recommended = 0.70
+            reasoning = (
+                f"Your sessions compact very early (avg {avg_pct:.0f}%). "
+                "Setting 0.70 allows more context to accumulate before "
+                "compacting — reduces unnecessary compactions."
+            )
+
+        if compact_count >= 10:
+            confidence = "high"
+        else:
+            confidence = "medium"
+
+        recommended_pct = int(round(recommended * 100))
+        settings_json = json.dumps(
+            {"autoCompactThreshold": recommended}, indent=2
+        )
+        claude_md_rule = (
+            f"When context reaches {recommended_pct}%, run /compact with "
+            "a focused description of the current task before continuing."
+        )
+
+        return {
+            "project": project,
+            "recommended_threshold": recommended,
+            "recommended_threshold_pct": recommended_pct,
+            "current_avg_compact_pct": round(avg_pct, 1),
+            "compact_count": compact_count,
+            "bad_compact_count": bad_compact_count,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "settings_json": settings_json,
+            "settings_json_claude_md": claude_md_rule,
+            "data_sufficient": True,
+        }
+    except Exception:
+        return _f7_fallback(project)
+
+
+def recommend_compact_all(conn, days=30):
+    """Per-project recommendations for every project with at least one
+    compact event in the window. Returns dict keyed by project name."""
+    try:
+        since = _now() - (days * 86400)
+        rows = conn.execute(
+            "SELECT project FROM lifecycle_events "
+            "WHERE event_type = 'compact' AND timestamp >= ? "
+            "  AND project IS NOT NULL AND project != '' "
+            "GROUP BY project HAVING COUNT(*) >= 1",
+            (since,),
+        ).fetchall()
+    except Exception:
+        return {}
+    result = {}
+    for r in rows:
+        proj = r[0]
+        if not proj:
+            continue
+        result[proj] = recommend_compact_threshold(conn, proj, days=days)
+    return result
+
+
 def lifecycle_summary(conn, project=None, days=30):
     """Roll up compact + subagent_spawn events for one project (or all).
     A 'late compact' is one where context_pct_at_event > 75."""
@@ -837,6 +998,16 @@ def lifecycle_summary(conn, project=None, days=30):
     avg_timing = round(sum(compact_pcts) / len(compact_pcts), 1) if compact_pcts else 0
     late_compacts = sum(1 for p in compact_pcts if p > 75)
 
+    # v2-F7: embed a per-project autoCompactThreshold recommendation so
+    # the dashboard can render it without a second fetch. Null on error
+    # or when no project is specified.
+    recommendation = None
+    if project:
+        try:
+            recommendation = recommend_compact_threshold(conn, project, days=days)
+        except Exception:
+            recommendation = None
+
     return {
         "project": project or "all",
         "days": days,
@@ -847,6 +1018,7 @@ def lifecycle_summary(conn, project=None, days=30):
             "late_compacts": late_compacts,
         },
         "events": rows,
+        "recommendation": recommendation,
     }
 
 
@@ -1089,6 +1261,12 @@ def full_analysis(conn, account="all"):
     except Exception:
         context_rot = {}
 
+    # v2-F7: autoCompactThreshold recommendations per project
+    try:
+        recommendations = recommend_compact_all(conn, days=30)
+    except Exception:
+        recommendations = {}
+
     # Efficiency score
     try:
         efficiency = compute_efficiency_score(conn, account)
@@ -1112,6 +1290,7 @@ def full_analysis(conn, account="all"):
         "waste_summary": waste_summary,
         "lifecycle": lifecycle,
         "context_rot": context_rot,
+        "recommendations": recommendations,
         "efficiency": efficiency,
         "generated_at": _now(),
     }

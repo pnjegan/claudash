@@ -1193,6 +1193,7 @@ function authHeaders() {
     }
     const lifecycle = data.lifecycle || {};
     const contextRot = data.context_rot || {};
+    const recommendations = data.recommendations || {};
     $('proj-body').innerHTML = projs.map((p, i) => {
       const model = p.dominant_model ? p.dominant_model.replace('claude-', '') : 'sonnet';
       const share = p.token_share_pct || 0;
@@ -1229,6 +1230,7 @@ function authHeaders() {
             '</div>' +
             renderSessionHealthBlock(p.name, lifecycle[p.name] || {}, waste[p.name] || {}) +
             renderContextRotBlock(p.name, contextRot[p.name] || null) +
+            renderThresholdBlock(p.name, recommendations[p.name] || null) +
             renderSubagentBlock(p.name, subagents[p.name] || {}) +
             renderWasteBlock(p.name, waste[p.name] || {}) +
           '</td>' +
@@ -1242,6 +1244,78 @@ function authHeaders() {
         if (exp) exp.style.display = exp.style.display === 'none' ? 'table-row' : 'none';
       });
     });
+    // v2-F7: copy-button handlers for the autoCompactThreshold block.
+    // Data-* attribute holds the payload (HTML-escaped); click writes
+    // to clipboard and shows a transient "Copied!" label.
+    $('proj-body').querySelectorAll('.thr-copy').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();  // don't toggle the row expand
+        const content = btn.dataset.copyContent || '';
+        if (!content) return;
+        const orig = btn.textContent;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(content).catch(function() {});
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = content;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); } catch (err) {}
+          document.body.removeChild(ta);
+        }
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      });
+    });
+  }
+
+  function renderThresholdBlock(projName, rec) {
+    if (!rec) return '';
+    const cc = rec.compact_count || 0;
+    if (cc === 0) return '';
+
+    const avgPct = rec.current_avg_compact_pct || 0;
+    const recPct = rec.recommended_threshold_pct || 0;
+    const bad = rec.bad_compact_count || 0;
+    const conf = rec.confidence || 'low';
+    const threshold = rec.recommended_threshold || 0.70;
+
+    // Tone for the recommended value:
+    //   red   if bad_compact_count > 0
+    //   green if recPct < avgPct - 10 (recommending materially earlier)
+    //   amber otherwise (within 10% of current avg)
+    let tone = 'var(--accent-amber)';
+    if (bad > 0) tone = 'var(--accent-red)';
+    else if (recPct < avgPct - 10) tone = 'var(--accent-green)';
+
+    let html = '<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">';
+    html += '<div class="k" style="font-family:var(--sans);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-tertiary);margin-bottom:8px">autoCompactThreshold recommendation</div>';
+
+    if (!rec.data_sufficient) {
+      html += '<div style="font-family:var(--mono);font-size:11px;color:var(--text-tertiary)">'
+           + 'Not enough compact data yet (need 3+, have ' + cc + ') \u2014 improves over time.'
+           + '</div></div>';
+      return html;
+    }
+
+    html += '<div class="kvs">';
+    html += '<div class="kv"><span class="k">recommended</span><span class="v" style="color:' + tone + ';font-weight:500">'
+         + threshold.toFixed(2) + '</span></div>';
+    html += '<div class="kv"><span class="k">confidence</span><span class="v">' + esc(conf) + '</span></div>';
+    html += '<div class="kv"><span class="k">current avg</span><span class="v">' + avgPct.toFixed(0) + '% context at compact time</span></div>';
+    html += '<div class="kv"><span class="k">bad compacts</span><span class="v">' + bad + '</span></div>';
+    html += '</div>';
+
+    html += '<div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--text-secondary)">'
+         + esc(rec.reasoning || '') + '</div>';
+
+    const btnStyle = 'font-family:var(--mono);font-size:11px;padding:4px 10px;background:var(--bg-alt,#F0EDE6);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-secondary)';
+    html += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
+    html += '<button class="thr-copy" data-copy-content="' + esc(rec.settings_json || '') + '" style="' + btnStyle + '">Copy settings.json</button>';
+    html += '<button class="thr-copy" data-copy-content="' + esc(rec.settings_json_claude_md || '') + '" style="' + btnStyle + '">Copy CLAUDE.md rule</button>';
+    html += '</div>';
+    html += '</div>';
+    return html;
   }
 
   function renderSessionHealthBlock(projName, lc, wasteForProj) {
