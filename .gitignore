@@ -40,11 +40,6 @@ claudash/
 dist/
 build/
 *.egg-info/
-data/usage.db
-data/usage.db-wal
-data/usage.db-shm
-__pycache__/
-*.pyc
 FOUNDING_DOC.md
 END_USER_REVIEW.md
 REPORT.md
