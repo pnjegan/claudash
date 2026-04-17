@@ -10,7 +10,8 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 ![python](https://img.shields.io/badge/python-3.8%2B-black)
 ![deps](https://img.shields.io/badge/dependencies-zero-black)
 
-![Claudash Dashboard](docs/screenshot.png)
+![Claudash Dashboard](screenshots/Claudash_V2.0.4.png)
+*Claudash v2.0.6 — efficiency score, window usage, API equivalent cost, cache hit rate*
 
 ## What you get
 
