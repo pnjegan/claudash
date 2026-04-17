@@ -403,6 +403,63 @@ def test_v2_f4_fix_generator():
     else:
         record("TEST-V2-F4", "Fix generator", "PASS", detail)
 
+def test_v2_f4b_non_anthropic_rejected():
+    """v2.0.1 policy: only anthropic / bedrock / openrouter are supported.
+    Any other fix_provider value must be rejected by _call_provider with a
+    ValueError, and generate_fix must surface that as a graceful error dict
+    (never raise). Gap #22 from CLAUDASH_AUDIT."""
+    import os
+    import sqlite3 as _sqlite3
+    import tempfile
+    try:
+        sys.path.insert(0, PROJ_DIR)
+        import fix_generator
+    except Exception as e:
+        record("TEST-V2-F4b", "Anthropic-only policy", "FAIL", f"Import error: {e}")
+        return
+
+    # Scratch DB so we don't mutate live state. Seed the settings row with a
+    # provider name that is NOT in SUPPORTED_PROVIDERS.
+    tmp_path = tempfile.mktemp(suffix="_claudash_test.db")
+    try:
+        conn = _sqlite3.connect(tmp_path)
+        conn.row_factory = _sqlite3.Row
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER)")
+        conn.execute("INSERT INTO settings (key, value, updated_at) VALUES ('fix_provider', 'openai', 0)")
+        conn.commit()
+
+        # _call_provider must reject unknown provider with ValueError
+        try:
+            fix_generator._call_provider("ignored prompt", conn)
+            raised = False
+            err_msg = "(no exception)"
+        except ValueError as e:
+            raised = True
+            err_msg = str(e)
+        except Exception as e:
+            raised = False
+            err_msg = f"wrong exception type: {type(e).__name__}: {e}"
+
+        # And the unknown name must not be in the SUPPORTED_PROVIDERS catalogue
+        not_in_catalogue = "openai" not in fix_generator.SUPPORTED_PROVIDERS
+
+        detail = (f"raised ValueError: {raised}\n"
+                  f"message: {err_msg}\n"
+                  f"not in SUPPORTED_PROVIDERS: {not_in_catalogue}\n"
+                  f"SUPPORTED_PROVIDERS: {sorted(fix_generator.SUPPORTED_PROVIDERS.keys())}")
+
+        if raised and not_in_catalogue and "Unknown fix_provider" in err_msg:
+            record("TEST-V2-F4b", "Anthropic-only policy", "PASS", detail)
+        else:
+            record("TEST-V2-F4b", "Anthropic-only policy", "FAIL", detail)
+
+        conn.close()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
 def test_v2_f5_mcp_bidirectional():
     try:
         sys.path.insert(0, PROJ_DIR)
@@ -663,6 +720,7 @@ ALL_TESTS = {
         ("TEST-V2-F2", "Context rot", test_v2_f2_context_rot),
         ("TEST-V2-F3", "Bad compact detector", test_v2_f3_bad_compact),
         ("TEST-V2-F4", "Fix generator", test_v2_f4_fix_generator),
+        ("TEST-V2-F4b", "Anthropic-only policy (gap #22)", test_v2_f4b_non_anthropic_rejected),
         ("TEST-V2-F5", "Bidirectional MCP", test_v2_f5_mcp_bidirectional),
         ("TEST-V2-F6", "Streaming cost meter", test_v2_f6_streaming_meter),
         ("TEST-V2-F7", "Threshold recommendations", test_v2_f7_threshold_recommendations),
