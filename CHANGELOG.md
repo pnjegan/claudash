@@ -1061,3 +1061,33 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 
 - **`MODEL_PRICING` hardcoded** (`config.py:81-84`, gap #25) — no refresh procedure. Every ROI number in the dashboard silently drifts when Anthropic updates the rate card.
   Why deferred: design decision needed (env var vs config file vs tagged-release check).
+
+## [2026-04-17] Session 18 — v2.0.3: floundering detector rewrite + doc reconciliation + Anthropic-only test
+
+### Fixed
+- **Floundering detector — was silently returning zero events for all real workloads.** Rewrote `_detect_floundering` (`waste_patterns.py:120-145`) to count ≥4 identical `(tool, input_hash)` calls within any 50-call sliding window, instead of requiring 4 *consecutive* identical calls. Real Claude Code sessions interleave Read/Grep/Edit between retries, so the consecutive requirement almost never fired.
+  Impact on the live DB: **0 → 8 events, $0 → $2,323.73 surfaced waste, 8 sessions flagged across 5 projects**. Efficiency score dropped from 65/D to 45/F as the dimension flipped from false-positive (100/100) to real signal (0/100, 11.1% flounder rate).
+  Files: waste_patterns.py (FLOUNDER_WINDOW=50 added, detector rewritten)
+
+- **Docstring and README tool/rule counts drifted from code.** `mcp_server.py` docstring said "5 tool schemas" while the TOOLS registry shipped 10; README said "14 rules" while the code emits 16 distinct insight types.
+  Files: mcp_server.py (docstring rewritten with Read/Write-side grouping), README.md (headline bullet + §Insight rules table updated, bad_compact_detected row added, budget_warning/budget_exceeded split)
+
+### Added
+- **Negative-path test for Anthropic-only provider policy** (`TEST-V2-F4b`). Seeds a scratch SQLite DB with `fix_provider='openai'`, calls `fix_generator._call_provider`, and asserts it raises `ValueError("Unknown fix_provider 'openai' …")`. Verifies the v2.0.1 policy at code level — any provider not in `{anthropic, bedrock, openrouter}` is rejected cleanly.
+  Files: claudash_test_runner.py (test_v2_f4b_non_anthropic_rejected + ALL_TESTS registration)
+
+- **CLAUDASH_AUDIT.md** (433 lines) — the engineering self-review that produced this patch. Every claim cited to file:line, SQL, or git commit. Headline: $7,981.58 API-equivalent spend on $100/mo Max over 30 days = 79.8× subscription ROI.
+  Files: CLAUDASH_AUDIT.md
+
+- **FIXES_TODO.md** — living follow-up queue. v2.1 and v3 items carried from the audit.
+  Files: FIXES_TODO.md
+
+### Architecture Decisions
+- **Floundering detection is now density-based, not consecutive-based.** Rule: ≥4 occurrences of same `(tool, input_hash)` key within ≤50 consecutive tool calls. Mirrors the `_detect_repeated_reads` pattern at `waste_patterns.py:147-181`. Window=50 chosen after sensitivity testing (window=20 under-fired at 2 total events / 1 Tidify; window=50 lands at 8 events / 3 Tidify, right at the user-specified sensitivity boundary).
+  Why: consecutive matching never triggered in real sessions because Read/Grep/Edit calls interleave between retries. Density within a window captures the classic "stuck in retry loop" signal without flagging intentional re-runs that are spread across hundreds of turns.
+  Impact: flips the efficiency-score `flounder` dimension from a false-positive 100 to a real 0–100 signal. Changes the grade from D to F on the live DB — honest reading.
+
+### Known Issues / Not Done
+- **Gap #31 — per-fix attribution remains deferred to v3.** `compute_delta` at `fix_tracker.py:287-404` still produces identical verdicts for N concurrent fixes on the same project. Blocked on structural redesign (fix-specific waste-pattern subset tracking). See FIXES_TODO.md.
+- **Untested v2 closed-loop paths** — `/api/insights/{id}/generate-fix`, `/api/fixes/{id}/apply`, `_auto_measure_fixes`, `find_claude_md` fuzzy matching (audit gaps #9-#12). Deferred to v2.1 maintenance batch.
+- **MODEL_PRICING refresh procedure** (audit gap #25). Hardcoded at `config.py:81-84` with no update path. Decision deferred — env var vs config file vs tagged-release check.
