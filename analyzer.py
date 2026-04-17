@@ -157,11 +157,28 @@ def window_metrics(conn, account="personal_max"):
     total_tokens = sum(r["input_tokens"] + r["output_tokens"] for r in rows)
     window_pct = (total_tokens / window_limit * 100) if window_limit > 0 else 0
 
-    elapsed_seconds = max(now - window_start, 1)
-    if total_tokens > 0:
-        burn_per_second = total_tokens / elapsed_seconds
+    # Peak burn from the last 30 minutes, not averaged across the whole rolling
+    # window. Using the full 5-h average produced a constant "~892 min to cap"
+    # that never tripped the window_risk <60-min threshold.
+    lookback_30 = now - 1800
+    if acct_filter:
+        peak_row = conn.execute(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) AS peak_tokens "
+            "FROM sessions WHERE account = ? AND timestamp > ?",
+            (acct_filter, lookback_30),
+        ).fetchone()
+    else:
+        peak_row = conn.execute(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) AS peak_tokens "
+            "FROM sessions WHERE timestamp > ?",
+            (lookback_30,),
+        ).fetchone()
+    peak_tokens_30 = peak_row["peak_tokens"] or 0
+    burn_per_second = peak_tokens_30 / 1800 if peak_tokens_30 > 0 else 0
+
+    if total_tokens > 0 and burn_per_second > 0:
         remaining_tokens = window_limit - total_tokens
-        if burn_per_second > 0 and remaining_tokens > 0:
+        if remaining_tokens > 0:
             seconds_to_limit = remaining_tokens / burn_per_second
             predicted_limit_time = now + seconds_to_limit
             minutes_to_limit = int(seconds_to_limit / 60)
@@ -169,7 +186,6 @@ def window_metrics(conn, account="personal_max"):
             predicted_limit_time = None
             minutes_to_limit = None
     else:
-        burn_per_second = 0
         predicted_limit_time = None
         minutes_to_limit = None
 
