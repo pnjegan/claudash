@@ -293,6 +293,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/" or path == "/index.html":
             self._serve_template("dashboard.html")
 
+        elif path == "/favicon.ico":
+            ico_data = bytes([
+                0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0,
+                40, 0, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+                32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ])
+            self.send_response(200)
+            self.send_header("Content-Type", "image/x-icon")
+            self.send_header("Content-Length", str(len(ico_data)))
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(ico_data)
+            return
+
         elif path == "/accounts":
             self._serve_template("accounts.html")
 
