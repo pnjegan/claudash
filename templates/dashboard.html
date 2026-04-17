@@ -1015,17 +1015,35 @@ function authHeaders() {
 
     let todayCell;
     if (hasBudget) {
-      const cls = budgetPct >= 100 ? 'red' : (budgetPct >= 80 ? 'amber' : 'green');
+      if (budgetPct >= 100) {
+        todayCell = {
+          label: 'Today',
+          value: fmtMoney(todayCost),
+          sub: 'OVER BUDGET ' + fmtMoney(budget) + ' limit',
+          cls: 'red',
+          bar: Math.min(budgetPct, 100),
+          barCls: 'red',
+        };
+      } else {
+        const cls = budgetPct >= 80 ? 'amber' : 'green';
+        todayCell = {
+          label: 'Today',
+          value: fmtMoney(todayCost),
+          sub: 'within budget (' + fmtMoney(budget) + ' limit, ' + budgetPct.toFixed(0) + '%)',
+          cls: cls,
+          bar: Math.min(budgetPct, 100),
+          barCls: cls,
+        };
+      }
+    } else {
       todayCell = {
         label: 'Today',
         value: fmtMoney(todayCost),
-        sub: '/ ' + fmtMoney(budget) + ' (' + budgetPct.toFixed(0) + '%)',
-        cls: cls,
-        bar: Math.min(budgetPct, 100),
-        barCls: cls,
+        sub: 'no budget set \u2014 <a href="/accounts" style="color:inherit;text-decoration:underline">configure in Accounts</a>',
+        cls: '',
+        bar: null,
+        subHtml: true,
       };
-    } else {
-      todayCell = {label: 'Today', value: fmtMoney(todayCost), sub: 'no budget set', cls: '', bar: null};
     }
 
     // Efficiency score
@@ -1052,11 +1070,12 @@ function authHeaders() {
       const bar = (c.bar !== null && c.bar !== undefined)
         ? '<div class="mini-bar"><div class="fill ' + (c.barCls || '') + '" style="width:' + c.bar + '%"></div></div>'
         : '';
+      const subContent = c.subHtml ? c.sub : esc(c.sub);
       return (
         '<div class="hero-cell"' + (c.id ? ' id="' + c.id + '"' : '') + '>' +
           '<div class="label">' + esc(c.label) + '</div>' +
           '<div class="value ' + c.cls + '">' + esc(c.value) + '</div>' +
-          '<div class="sub">' + esc(c.sub) + '</div>' +
+          '<div class="sub">' + subContent + '</div>' +
           bar +
         '</div>'
       );
