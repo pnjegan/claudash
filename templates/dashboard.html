@@ -960,7 +960,7 @@ function authHeaders() {
       const cls = currentAccount === a.account_id ? ' active' : '';
       html += '<button class="tab' + cls + '" data-account="' + esc(a.account_id) + '">' + esc(a.label) + '</button>';
     }
-    html += '<a class="tab add-tab" href="/accounts">+</a>';
+    html += '<a class="tab add-tab" href="/accounts" title="Manage accounts">\u2699 Accounts</a>';
     c.innerHTML = html;
     c.querySelectorAll('button.tab').forEach(t => {
       t.addEventListener('click', () => {
