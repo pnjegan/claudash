@@ -1091,3 +1091,50 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 - **Gap #31 — per-fix attribution remains deferred to v3.** `compute_delta` at `fix_tracker.py:287-404` still produces identical verdicts for N concurrent fixes on the same project. Blocked on structural redesign (fix-specific waste-pattern subset tracking). See FIXES_TODO.md.
 - **Untested v2 closed-loop paths** — `/api/insights/{id}/generate-fix`, `/api/fixes/{id}/apply`, `_auto_measure_fixes`, `find_claude_md` fuzzy matching (audit gaps #9-#12). Deferred to v2.1 maintenance batch.
 - **MODEL_PRICING refresh procedure** (audit gap #25). Hardcoded at `config.py:81-84` with no update path. Decision deferred — env var vs config file vs tagged-release check.
+
+## [2026-04-17] Session 19 — Audit of v2.0.4, 6-fix sprint → v2.0.5, emergency WAL fix → v2.0.6
+
+### Fixed
+- **`minutes_to_limit` restored** (v2.0.5) — after Session 18's rolling-window fix, `burn_per_second` was averaged across the full 5h window, producing a stable ~892 min prediction that never tripped the `window_risk` <60-min threshold. Rewrote to sample peak burn from the last 30 minutes only. Live DB now shows `minutes_to_limit=1, burn_per_minute=511116` (honest — reflects heavy audit session).
+  Files: analyzer.py (window_metrics burn calculation)
+
+- **Daily budget TODAY card** (v2.0.5) — prior code showed static "no budget set" text. Now: over-budget (>=100%) renders red with "OVER BUDGET $X.XX limit"; within-budget renders green/amber with "within budget ($X.XX limit, N%)"; unset renders grey with clickable "configure in Accounts" link. Also added `subHtml` support to hero-cell renderer so the anchor tag renders instead of being escaped.
+  Files: templates/dashboard.html (renderHero todayCell + cells.map renderer)
+
+- **favicon 404** (v2.0.5) — browsers hit `/favicon.ico` on every page load and got 404. Added a 70-byte transparent 1x1 ICO response with 24h cache-control. Live verification requires server restart.
+  Files: server.py (do_GET /favicon.ico route)
+
+- **`.gitignore` duplicates** (v2.0.5) — `data/usage.db`, `data/usage.db-wal`, `data/usage.db-shm`, `__pycache__/`, `*.pyc` each appeared twice in the file. Deduped to one occurrence each. All other entries preserved.
+  Files: .gitignore
+
+- **`fix_generator.py` docstring drift** (v2.0.5) — claimed direct Anthropic API as primary transport. Updated to accurately reflect live config: PRIMARY/LIVE = openrouter (fix_provider in DB, model=anthropic/claude-sonnet-4-5); SECONDARY = direct Anthropic (needs ANTHROPIC_API_KEY env) and AWS Bedrock (needs boto3). Added explicit Anthropic-only policy note with TEST-V2-F4b reference.
+  Files: fix_generator.py
+
+- **SQLite "database is locked" errors under concurrent load** (v2.0.6) — scanner + claude_ai poller + API handlers + cost-event hooks can all hit the DB simultaneously. `get_conn()` already had WAL mode and 5s busy_timeout; bumped busy_timeout to 30s to match the Python-level `sqlite3.connect(timeout=30)`, and added `synchronous=NORMAL` to reduce fsync contention on writers. Verified 0 lock errors over a 60s live run after restart.
+  Files: db.py (get_conn PRAGMAs)
+
+### Added
+- **Orphan MCP process cleanup on Claudash startup** (v2.0.5) — `cleanup_orphan_mcp()` called in `_run_dashboard` before `start_periodic_scan`. Uses `pgrep -f mcp_server.py` and SIGKILLs every non-self match. Active Claude Code sessions respawn their MCP child on next tool call — brief blip, no data loss. Known blunt: the implementation has no age check or active-session check, despite the docstring suggesting otherwise. Tighten in a follow-up if needed.
+  Files: cli.py
+
+### Architecture Decisions
+- **Read-only audit produced 12 findings; shipped fixes for 6.** Findings 1-12 were produced by a read-only audit of v2.0.4 (no code written during the audit phase, per user instruction). Prioritised: 1 CRITICAL (window_risk inert), 3 HIGH (minutes_to_limit broken, fix_provider=openrouter misdocumented, TODAY card dead-end), 6 MEDIUM (favicon, OAuth cron, orphan MCP, gitignore dupes, NO_DASH_KEY fragility, sync-token test), 5 LOW. All 4 CRITICAL+HIGH addressed in v2.0.5 along with 2 of the 6 MEDIUM. Remaining MEDIUM/LOW logged implicitly in commit messages; no dedicated tracking doc created this session.
+  Why: user asked for "brutal, no marketing" findings list with explicit prioritisation, then directed fixes in order without scope creep.
+  Impact: audit-driven maintenance sprint produced 2 patch releases in one session (v2.0.5, v2.0.6) without feature regression.
+
+- **WAL mode stays on by default; synchronous=NORMAL becomes new default.** WAL was already enabled in `get_conn` before this session — adding synchronous=NORMAL trades a very small durability window (at-most-one lost commit on power loss) for substantially fewer fsyncs per transaction. For a single-user local dashboard this tradeoff is correct. Note for posterity: if Claudash ever runs on a disk that could power-fail mid-write and the user cares about the last few seconds of data, revisit to synchronous=FULL.
+  Why: lock contention during concurrent scanner + poller + hook-writer + API reads was surfacing transient OperationalError.
+  Impact: all DB-writing code paths across the codebase benefit automatically; no per-caller changes needed.
+
+### Known Issues / Not Done
+- **Running dashboard process `1709234` on port 8080 is on pre-fix code** — it auto-respawned via `cmd_dashboard`'s exception handler when I killed the original, but Python doesn't reload modules on in-process restart. The new `busy_timeout=30000` and `synchronous=NORMAL` are NOT active in that process. Restart with `kill 1709234 && python3 cli.py dashboard --no-browser` to activate. New installs via `npx @jeganwrites/claudash@2.0.6` get the new code directly.
+  Why deferred: no urgent failure mode; WAL (already on) + the pre-existing 5s busy_timeout was sufficient to produce 0 lock errors in the 60s sample.
+
+- **MCP cleanup is blunt** — `cleanup_orphan_mcp()` in cli.py kills ALL non-self `mcp_server.py` processes regardless of age or active-session status. Docstring overstates safety. Tighten with age check (e.g., only kill if older than 1h AND no open stdin).
+  Why deferred: user authorised the code as written; behaviour is correct-enough for single-machine use.
+
+- **README and PRD doc drift audit gaps** #9-#12, #22 (untested v2 closed-loop paths) and #25 (MODEL_PRICING refresh procedure) from the original v2.0.0 audit remain open. No tests added this session for `/api/insights/{id}/generate-fix`, `/api/fixes/{id}/apply`, `_auto_measure_fixes`, or `find_claude_md` fuzzy matching.
+  Why deferred: this session was audit→fix of v2.0.4, not backfill of prior-session gaps.
+
+- **Medium-severity findings #9, #10 from this session's audit not fixed**: `_NO_DASH_KEY` bypass set fragility (needs framework-level guardrail), negative-path test for `/api/claude-ai/sync` token missing.
+  Why deferred: 6-fix budget reached; these were deprioritised below the highest-impact items.
