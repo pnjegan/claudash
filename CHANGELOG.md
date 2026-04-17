@@ -1027,3 +1027,37 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 
 - **The legacy step (1) `~/.claude/projects/<encoded>/CLAUDE.md` walk is effectively dead code** — those encoded dirs hold JSONL transcripts, not CLAUDE.md. Kept per spec ("preserve existing logic") and because the cost is one cheap `os.listdir` call.
   Why deferred: removing it is a separate cleanup; not blocking the fix.
+
+## [2026-04-17] Session 17 — Full codebase self-audit, CLAUDASH_AUDIT.md written (not committed)
+
+### Added
+- **CLAUDASH_AUDIT.md** (3,458 words, 12 sections + 2 appendices) — read-only engineering self-review produced via a structured 6-phase audit prompt. Opens with the headline proof-point ($7,981.58 API-equivalent on $100/mo Max = 79.8× ROI over 30 days), enumerates 63 features with file:line citations, splits v1 shipped (36 features) from v2 shipped (9 items: F1–F7, P1, P2) and v3 deferred (2) / out-of-scope (3), and reports two blog-blocking flags as the honest-content centerpiece.
+  Files: CLAUDASH_AUDIT.md (untracked, repo root)
+
+### Architecture Decisions
+- **Audit data window: 30 days (2026-03-19 → 2026-04-17), single account (`personal_max`).** Every number in the doc is backed by an inline SQL query against `data/usage.db`, not paraphrased.
+  Why: the audit doubles as a blog source — quoted numbers must survive later re-verification.
+  Impact: the SQL queries are themselves artefacts the blog can reuse; DB size (14 MB, 72 sessions, 21,830 rows, 206 MB JSONL parsed) is the anchor for anyone else running Claudash.
+
+- **Two flags elevated to headline content rather than fixed.** User decision during Phase 5.5 investigation: "blog-now-with-caveats, the two flaws are the blog's most honest content." Audit dedicates §7 to them with full diagnosis (Flag 1: floundering detector run against top Tidify session — 567 tool_use blocks, longest consecutive identical `(tool, input_hash)` run = 1; Flag 2: fixes 5/6/7/8 created in the same second, all four show identical −21.1% from the same project-level 90→71 measurement).
+  Why: shipping a self-audit that names its own gaps is the story.
+  Impact: Flag 1 fix (count non-consecutive repeats) queued for v2.1; Flag 2 (per-fix attribution) queued for v3 as formal Phase-4 gap #31.
+
+### Known Issues / Not Done
+- **CLAUDASH_AUDIT.md is untracked** — user decision: commit + push + publish are three separate decisions for a later session. Do not `git add` this file without explicit approval.
+  Why deferred: the user wants to sleep on publication scope before the doc enters git history.
+
+- **Flag 1 — floundering detector too strict** (`waste_patterns.py:36,120-145`). Current `FLOUNDER_THRESHOLD = 4` with consecutive matching produces 0 events on real workloads (top session has 7 repeats of `('Bash', '233564f8')` but longest consecutive run = 1). Fix: count total in-session repeats of `(tool, input_hash)` keys, mirroring `_detect_repeated_reads`.
+  Why deferred: one-session's-work fix, but user decided against bundling it with the audit commit to keep the audit read-only.
+
+- **Flag 2 / Phase-4 gap #31 — closed-loop attribution is project-scoped** (`fix_tracker.py:287-404`). `compute_delta` returns identical deltas for N concurrent fixes on the same project. Needs per-fix behavioural attribution (e.g., fix-specific waste-pattern subset tracking).
+  Why deferred: structural change to the fix tracker; scheduled for v3.
+
+- **12 untested v2 paths** (Phase-4 gaps #9–#12, #22, #23). P1 `/api/insights/{id}/generate-fix`, P2 `_auto_measure_fixes`, `/api/fixes/{id}/apply`, `find_claude_md` v2.0.2 fuzzy matching — all ship and work in production (DB evidence: 4 applied fixes, 25 measurements) but have no named test in `claudash_test_runner.py`.
+  Why deferred: v2.1 maintenance batch.
+
+- **Stale-doc drift** (Phase-4 gaps #6, #7, #8, #24): `mcp_server.py:21-27` docstring says "5 tool schemas" (code ships 10); README says "14 rules" (code emits 16 insight types); PRD says "4 write-side MCP tools" (code ships 5); PRD §11 mentions `fix_applier.py` that doesn't exist (apply logic lives in `server.py:896+`).
+  Why deferred: batched doc-reconciliation pass for v2.1.
+
+- **`MODEL_PRICING` hardcoded** (`config.py:81-84`, gap #25) — no refresh procedure. Every ROI number in the dashboard silently drifts when Anthropic updates the rate card.
+  Why deferred: design decision needed (env var vs config file vs tagged-release check).
