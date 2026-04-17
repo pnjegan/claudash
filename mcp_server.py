@@ -16,15 +16,22 @@ Claude Code loads MCP servers from ~/.claude/settings.json:
 Supported methods:
   initialize                     — handshake
   notifications/initialized      — post-handshake ack (no response)
-  tools/list                     — return the 5 tool schemas
+  tools/list                     — return the 10 tool schemas
   tools/call                     — invoke one of the tools
 
-Tools:
+Read tools (5, v1):
   claudash_summary        — per-account usage rollup
   claudash_project        — detailed project metrics
   claudash_window         — current 5-hour window status
   claudash_insights       — active actionable insights
   claudash_action_center  — top 3 recommended actions
+
+Write-side tools (5, v2-F5):
+  claudash_trigger_scan     — force an immediate scan + waste-detect pass
+  claudash_report_waste     — Claude Code reports a waste event it observed
+  claudash_generate_fix     — produce a CLAUDE.md rule for a waste_event
+  claudash_dismiss_insight  — mark an insight as dismissed
+  claudash_get_warnings     — poll the mcp_warnings queue
 
 The server reads SQLite directly (no HTTP) so it does NOT need the web
 server to be running. Works offline and in cron jobs.

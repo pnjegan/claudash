@@ -23,7 +23,7 @@ Zero pip dependencies. Single SQLite file. Single HTML page.
 - **Daily budget alerts** — configurable per-account cost ceiling with warning and exceeded insights
 - **claude.ai browser tracking** — unified view across Claude Code + web chat (combined window burn)
 - **MCP server** — expose Claudash data to Claude Code itself via Model Context Protocol
-- **Insights engine** — 14 rules that fire actionable notifications (cache spikes, compaction gaps, window risk, ROI milestones, etc.)
+- **Insights engine** — 16 insight types that fire actionable notifications (cache spikes, compaction gaps, window risk, ROI milestones, bad compacts, budget warnings, etc.)
 
 ## Platform Support
 
@@ -217,7 +217,7 @@ insights.
 
 ## Insight rules
 
-14 rules fire after every scan:
+16 insight types fire after every scan (14 rule sections; `bad_compact_detected` is v2-F3, `budget_warning` and `budget_exceeded` are two severities of the same rule):
 
 | Type | Severity | When it triggers |
 |---|---|---|
@@ -233,8 +233,10 @@ insights.
 | `session_expiry` | red | claude.ai session cookie expired |
 | `pro_messages_low` | amber | Pro plan at >70% of message budget |
 | `subagent_cost_spike` | amber | Sub-agents consume >30% of project cost |
-| `floundering_detected` | red | Session stuck in retry loops (same tool >=4 times) |
-| `budget_warning` / `budget_exceeded` | amber / red | Daily budget threshold crossed |
+| `floundering_detected` | red/amber | 4+ identical `(tool, input_hash)` calls within any 50-call window in a session |
+| `bad_compact_detected` | red | `/compact` at >60% context followed by messages that reference summarised-away content (v2-F3) |
+| `budget_warning` | amber | Daily budget at 80% |
+| `budget_exceeded` | red | Daily budget exceeded |
 
 ## Fix Tracker
 
