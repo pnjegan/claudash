@@ -33,7 +33,8 @@ from db import get_conn, insert_waste_event, clear_waste_events, get_setting, se
 
 # ─── Parameters ──────────────────────────────────────────────────
 
-FLOUNDER_THRESHOLD = 4           # consecutive same-tool calls
+FLOUNDER_THRESHOLD = 4           # same (tool, input_hash) repeats within the window
+FLOUNDER_WINDOW = 50             # repeats must sit within N consecutive tool calls to count
 REPEATED_READ_THRESHOLD = 3      # same file read N times in one session
 COST_OUTLIER_MULTIPLIER = 3.0    # session cost > Nx project avg
 DEEP_TURN_THRESHOLD = 100        # turns in a session
@@ -118,29 +119,34 @@ def _input_hash(inp):
 
 
 def _detect_floundering(tool_calls):
-    """Return (count, detail) for FLOUNDERING — runs of >=4 consecutive
-    identical (tool_name, input_hash) pairs. Using input_hash means
-    running Bash("npm test") 5 times intentionally is NOT flagged —
-    only identical (tool, input) pairs count. `tool_calls` is an
-    iterable of (turn, name, input) tuples."""
+    """Return (count, detail) for FLOUNDERING — (tool, input_hash) keys that
+    repeat >=FLOUNDER_THRESHOLD times within any FLOUNDER_WINDOW-wide slice
+    of consecutive tool calls.
+
+    Density-based, not consecutive: real Claude Code sessions interleave
+    Reads/Greps/Edits between retries, so the legacy "4 in a row" rule
+    never fired (see CLAUDASH_AUDIT.md §7 flag 1 — top Tidify session had
+    7 repeats of one Bash invocation but longest consecutive run was 1).
+    Intentional re-runs stay excluded because identical-input calls that
+    are spread widely (>FLOUNDER_WINDOW apart) are not flagged."""
+    calls = list(tool_calls)
+    positions = defaultdict(list)
+    for idx, (turn, name, inp) in enumerate(calls):
+        positions[(name, _input_hash(inp))].append((idx, turn, name))
+
     runs = []
-    current_key = None
-    current_name = None
-    current_len = 0
-    current_start = 0
-    for turn, name, inp in tool_calls:
-        key = (name, _input_hash(inp))
-        if key == current_key:
-            current_len += 1
-        else:
-            if current_name and current_len >= FLOUNDER_THRESHOLD:
-                runs.append({"tool": current_name, "length": current_len, "start_turn": current_start})
-            current_key = key
-            current_name = name
-            current_len = 1
-            current_start = turn
-    if current_name and current_len >= FLOUNDER_THRESHOLD:
-        runs.append({"tool": current_name, "length": current_len, "start_turn": current_start})
+    for _key, occs in positions.items():
+        if len(occs) < FLOUNDER_THRESHOLD:
+            continue
+        for i in range(len(occs) - FLOUNDER_THRESHOLD + 1):
+            span = occs[i + FLOUNDER_THRESHOLD - 1][0] - occs[i][0]
+            if span < FLOUNDER_WINDOW:
+                runs.append({
+                    "tool": occs[i][2],
+                    "length": len(occs),
+                    "start_turn": occs[i][1],
+                })
+                break
     return len(runs), {"runs": runs, "total_flounder_calls": sum(r["length"] for r in runs)}
 
 
