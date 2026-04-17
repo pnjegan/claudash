@@ -106,6 +106,34 @@ def cmd_dashboard():
             restart_delay = min(restart_delay * 2, 60)
 
 
+def cleanup_orphan_mcp():
+    """Kill stale mcp_server.py processes left behind by prior Claude Code
+    sessions. Called once at dashboard start. Intentionally blunt: kills
+    every non-self mcp_server.py process. An active Claude Code session
+    will respawn its MCP child on next tool call — no loss, brief blip."""
+    import subprocess
+    import signal
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "mcp_server.py"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pids = [p for p in result.stdout.strip().split("\n") if p]
+        current_pid = str(os.getpid())
+        killed = 0
+        for pid in pids:
+            if pid and pid != current_pid:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                    killed += 1
+                except (ProcessLookupError, ValueError):
+                    pass
+        if killed:
+            print(f"[mcp] Cleaned up {killed} orphan MCP process(es)", flush=True)
+    except Exception:
+        pass
+
+
 def _run_dashboard(port=8080, no_browser=False, skip_init=False):
     init_db()
     rows = scan_all()
@@ -169,6 +197,8 @@ def _run_dashboard(port=8080, no_browser=False, skip_init=False):
     else:
         print(f"  Open http://localhost:{port} in your browser.", flush=True)
     print(flush=True)
+
+    cleanup_orphan_mcp()
 
     start_periodic_scan(interval_seconds=300)
     poll_claude_ai()
