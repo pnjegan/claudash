@@ -124,10 +124,12 @@ def account_metrics(conn, account="all"):
 # ── Window metrics (per account) ──
 
 def window_metrics(conn, account="personal_max"):
-    # NOTE: Uses UTC epoch-modulo for window boundaries.
-    # Anthropic's actual window resets_at may differ by up to 5 hours.
-    # For precise window tracking, enable browser sync (mac-sync.py or oauth_sync.py)
-    # which reads the actual resets_at from claude.ai API.
+    # Rolling 5-hour lookback from `now`. The prior epoch-modulo snap to
+    # 00/05/10/15/20 UTC excluded sessions from earlier in the same real
+    # 5-hour period whenever `now` had just crossed a snap boundary.
+    # Anthropic's actual window resets_at may still differ — for precise
+    # tracking, enable browser sync (mac-sync.py or oauth_sync.py) which
+    # reads resets_at from the claude.ai API.
     ACCOUNTS = get_accounts_config(conn)
     acct_info = ACCOUNTS.get(account, {})
     if not acct_info:
@@ -137,19 +139,9 @@ def window_metrics(conn, account="personal_max"):
     window_seconds = MAX_WINDOW_HOURS * 3600
 
     acct_filter = account if account and account != "all" else None
-    if acct_filter:
-        row = conn.execute(
-            "SELECT MAX(timestamp) as last_ts FROM sessions WHERE account = ?", (acct_filter,)
-        ).fetchone()
-    else:
-        row = conn.execute("SELECT MAX(timestamp) as last_ts FROM sessions").fetchone()
 
-    last_ts = row["last_ts"] if row and row["last_ts"] else now
-
-    window_start = last_ts - (last_ts % window_seconds)
-    if window_start + window_seconds < now:
-        window_start = now - (now % window_seconds)
-    window_end = window_start + window_seconds
+    window_start = now - window_seconds
+    window_end = now
 
     if acct_filter:
         rows = conn.execute(
