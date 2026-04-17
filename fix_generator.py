@@ -2,11 +2,24 @@
 
 Given a waste_event row, produces a targeted CLAUDE.md rule using a
 pattern-specific prompt template. Claudash uses Claude to fix Claude
-Code waste — all three transports below run Anthropic models:
+Code waste — all three transports below run Anthropic models.
 
-  - anthropic   direct Anthropic Messages API (urllib, stdlib only)
-  - bedrock     AWS Bedrock Runtime, Anthropic models (optional boto3)
-  - openrouter  OpenRouter routed to anthropic/* models (urllib, stdlib)
+Live production config (as shipped, DB settings default):
+  - fix_provider = openrouter
+  - openrouter_model = anthropic/claude-sonnet-4-5
+  - openrouter_api_key from DB settings (not env)
+
+All three supported transports:
+  - openrouter  (PRIMARY / LIVE) — OpenRouter routed to anthropic/*
+                 models via urllib, stdlib only, key in DB settings
+  - anthropic   (SECONDARY) — direct Anthropic Messages API; requires
+                 ANTHROPIC_API_KEY env var or anthropic_api_key setting
+  - bedrock     (SECONDARY) — AWS Bedrock Runtime, Anthropic models;
+                 requires optional boto3
+
+Anthropic-only policy (v2.0.1): any fix_provider value outside
+{openrouter, anthropic, bedrock} is rejected by _call_provider with
+ValueError. Verified by TEST-V2-F4b.
 
 All public entry points return a dict — they never raise. Error cases
 set the "error" field; callers inspect it.
