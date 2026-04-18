@@ -616,6 +616,57 @@ def generate_insights(conn=None):
     except Exception:
         pass
 
+    # ── 22. JIT_SKILL_WASTE (v3.3.1) ──
+    # Fires when a project's sessions spend a high fraction of tool calls
+    # on Read (proxy for upfront skill/doc loading). Skills loaded in the
+    # first few turns but never re-referenced = ~6.9K tokens/session burned.
+    # Calibrated from real data: Tidify 28% read-ratio, WikiLoop 21%.
+    # read_count + tool_call_count are denormalized per-session on every
+    # turn row, so collapse to session granularity first via a CTE.
+    try:
+        rows = conn.execute(
+            "WITH sess AS ("
+            "  SELECT session_id, project, account,"
+            "         MAX(tool_call_count) AS tc, MAX(read_count) AS rc,"
+            "         MAX(is_subagent) AS sa"
+            "  FROM sessions GROUP BY session_id"
+            ") "
+            "SELECT project, account, COUNT(*) AS sessions,"
+            "       AVG(rc) AS avg_reads, AVG(tc) AS avg_tools,"
+            "       AVG(CAST(rc AS FLOAT) / NULLIF(tc, 0)) AS read_ratio "
+            "FROM sess "
+            "WHERE sa = 0 AND tc > 5 AND rc > 0 "
+            "GROUP BY project, account "
+            "HAVING read_ratio > 0.20 AND avg_reads > 20 AND sessions > 3 "
+            "ORDER BY read_ratio DESC LIMIT 5"
+        ).fetchall()
+        for r in rows:
+            proj = r["project"]
+            if _insight_exists_recent(conn, "jit_skill_waste", proj, hours=24):
+                continue
+            ratio_pct = round((r["read_ratio"] or 0) * 100, 0)
+            est_tokens = int(r["sessions"] * 6900)
+            msg = (
+                f"{proj}: sessions average {r['avg_reads']:.0f} Read calls "
+                f"({ratio_pct:.0f}% of tool use). If skills load upfront, "
+                f"each session burns ~6.9K tokens on unused context. "
+                f"Move skills to /mnt/skills/ or trim CLAUDE.md to recover "
+                f"~{est_tokens:,} tokens across {r['sessions']} sessions."
+            )
+            detail = json.dumps({
+                "sessions": r["sessions"],
+                "avg_reads_per_session": round(r["avg_reads"], 1),
+                "avg_tool_calls_per_session": round(r["avg_tools"], 1),
+                "read_ratio_pct": ratio_pct,
+                "estimated_tokens_wasted": est_tokens,
+                "fix": "Remove unused skills from CLAUDE.md; load JIT via /mnt/skills/",
+            })
+            insert_insight(conn, r["account"] or "all", proj,
+                           "jit_skill_waste", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
     conn.commit()
     if should_close:
         conn.close()
