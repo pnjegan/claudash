@@ -1232,3 +1232,67 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 - **`compliance_events` shows `status='passed'` for 121 of 127 rows.** Useful baseline, but surfaces as "everything's fine" until more violators accumulate. Dashboard UI should probably default-hide passes.
 
 - **Medium-severity findings from Session 19/20 audit still open**: `_NO_DASH_KEY` bypass-set fragility (server.py:650), missing negative-path test for `/api/claude-ai/sync` token, and the `MODEL_PRICING` refresh procedure (config.py:81-84) — carried forward to v3.1.
+
+## [2026-04-18] Session 21 (cont.) — v3.0.1 row_factory fix
+
+### Fixed
+- **`insights.generate_insights(conn)` crashed on raw sqlite3 connection** — Latent pre-v3 bug: callers who passed a `sqlite3.connect()` result directly (without `row_factory = sqlite3.Row`) hit `TypeError: tuple indices must be integers or slices, not str` inside `get_accounts_config()` and downstream helpers. In-repo callers use `get_conn()` (which sets row_factory), so this never surfaced in production. External scripts — including the v3.0.0 audit script — tripped it.
+  Two-line fix: at function entry, check `conn.row_factory` and upgrade to `sqlite3.Row` if `None`. Also added `import sqlite3` for the type reference.
+  Files: insights.py
+
+## [2026-04-18] Session 21 (cont.) — v3.1.0 Sub-agent Work Classification
+
+### Added
+- **8 tool classification columns on `sessions`** — `tool_call_count`, `bash_count`, `read_count`, `write_count`, `grep_count`, `mcp_count`, `max_output_tokens`, `work_classification`. Added via the existing `_column_exists()` / `ALTER TABLE` migration loop at `db.py:108-114`; additive only, zero impact on existing rows. Session-aggregate semantics — same value repeated on every per-turn row; downstream collapses with `MAX() GROUP BY session_id`.
+  Files: db.py
+
+- **`scanner.classify_session_tools()` + `update_session_tool_classification()`** — extends `scan_lifecycle_events()` to count `tool_use` blocks per session. Reuses the existing `_iter_assistant_tool_uses()` helper (which was previously used only for `SUBAGENT_SPAWN` lifecycle events). Name mapping: `Bash` → bash_count; `Read`/`cat`/`LS` → read_count; `Write`/`Edit`/`MultiEdit`/`NotebookEdit` → write_count; `Grep` → grep_count; `mcp__*` → mcp_count. `max(output_tokens)` across assistant turns → `max_output_tokens`.
+  Backfill: ran against 235 tracked JSONL files. 35/35 sub-agent sessions now have tool data populated. Top sub-agent: `ad536966-83a` (Tidify, 454 tools: 62 bash, 181 read, 69 write, 137 grep).
+  Files: scanner.py
+
+- **`analyzer.classify_subagent_work(s)`** — per-session verdict from the 8 tool counts. Additive score: `write>0` (+2), `mcp>2` (+1), `max_output_tokens≥2000` (+1), `tool_call_count≥40` (+1), `bash>15 AND write>0` (+1). Map: score 0 = mechanical; score ≥ 2 = reasoning; else mixed.
+  Files: analyzer.py
+
+- **`analyzer.subagent_intelligence(conn, account)`** — per-project rollup. Query uses CTE with `GROUP BY session_id` to collapse per-turn rows to sessions before classifying. Returns each project's mechanical/reasoning/mixed counts and costs, `haiku_savings_estimate = mechanical_cost × 0.95`, top 5 sessions by cost, and verdict:
+    - `optimize_possible` → `mechanical_cost / total > 30%`
+    - `review_mechanical` → mechanical work exists but < 30% share
+    - `justified` → no mechanical work
+  Real verdicts on today's DB: Tidify `review_mechanical` ($547.81 mech / 20.9%), Claudash `review_mechanical` ($1.52 / 0.5%), Brainworks `justified`.
+  Files: analyzer.py
+
+- **`/api/data` response includes `subagent_intelligence`** — `full_analysis()` now attaches the intel dict alongside existing `subagent_metrics`. Response time 3.28s (warm cache) vs 4.24s baseline — classifier query benefits from `idx_sessions_project`, no cache layer needed.
+  Files: analyzer.py
+
+- **Dashboard "Work Classification" block** — `renderSubagentIntelBlock()` added to `templates/dashboard.html`. Renders below existing "Sub-agents" section, reuses existing `kvs`/`kv`/border-top-dashed CSS (no new stylesheet). Shows mechanical/reasoning/mixed counts + costs, colored verdict line, and — if `optimize_possible` — the `CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5` snippet with savings estimate. Top 5 sub-agent sessions mini-list. Served from disk on each request; no restart required for this change.
+  Files: templates/dashboard.html
+
+- **Insight rule 19 — `subagent_model_waste`** — appended after rule 18 in `insights.py::generate_insights()`. Fires when a project's verdict is `optimize_possible` AND `mechanical_cost > $10`; 12h per-project debounce. Actionable message: `"{project}: ${mech_cost} in mechanical sub-agent work Haiku could handle. Set CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5 to save ~${savings}."` Currently silent — no project crosses the 30% threshold (Tidify closest at 20.9%). Latent, not dead: realistic path to firing as workload shifts.
+  Files: insights.py
+
+- **Tests SA-001 through SA-005** — new `v3.1` section in `claudash_test_runner.py`. Covers mechanical/reasoning/mixed classification (SA-001–003), `subagent_intelligence` structure + valid verdict values (SA-004), and all 8 tool columns present in the schema (SA-005). Full suite: 26/28 passed, 0 FAIL, 1 WARN (git status — uncommitted, expected during this work), 1 SKIP (fix generator needs API key, pre-existing). Zero regressions.
+  Files: claudash_test_runner.py
+
+### Fixed
+- **Duplicate-dashboard-process gap (from Session 20)** — `_acquire_pid_lock()` in `cli.py` acquires `fcntl.flock(LOCK_EX|LOCK_NB)` on `/tmp/claudash.pid` at the top of `cmd_dashboard()`. A second `cli.py dashboard` invocation now exits 1 with `"Claudash already running (pid N). Kill it first or rm /tmp/claudash.pid"`. `atexit` cleans the pidfile on clean shutdown. Stale pidfiles from crashed processes are reclaimable (flock is per-file-description, not per-inode).
+  Key implementation detail: pidfile opened in `"a+"` mode (not `"w"`), so the content survives a failed lock acquire — the losing process reads the winner's pid to report it. Earlier draft used `"w"` and the error message showed an empty pid.
+  Files: cli.py
+
+### Architecture Decisions
+- **Per-turn vs per-session disambiguation, redux.** Every v3.1 query follows the CTE-first pattern: `WITH s AS (SELECT session_id, SUM(cost_usd), MAX(tool_call_count) ... GROUP BY session_id)` before aggregating. Rejected alternative: a `session_aggregates` side-table. Per-turn storage + MAX() collapse keeps the read path index-friendly (`idx_sessions_project`) and avoids a cross-table write barrier.
+
+- **Dropped 3 of 4 originally-proposed insight rules during planning.** Pre-flight count queries showed `subagent_chain_cost` (fan-out per parent never exceeds 1), `prompt_cache_absent` (zero sessions qualify), and `output_input_ratio_low` (inverted by cache_read volume) would fire on zero rows. Replaced upstream (v3.0.0) with 4 rules that each fire on ≥1 row of real data today. Rule 19 (`subagent_model_waste`) here follows the same rule: ships silent rather than firing on manufactured signal.
+
+- **Version numbering reconciled.** Git commits through Session 21 referenced v3.0.0/v3.0.1/v3.1.0 but `package.json` was 2.0.7 the whole time. Ran `npm version 3.1.0` explicitly (not `npm version minor`, which per semver would have produced 2.1.0) to make the public artifact match the history. The 3.0.0 and 3.0.1 tags were never pushed, so nobody external sees a version gap.
+
+### Known Issues / Not Done
+- **Rule 19 is latent** — silent until a project's sub-agent mechanical share crosses 30%. Tidify is at 20.9%. Not manufactured signal; waiting for real movement.
+
+- **`compliance --score` CLI command** — planned in v3 spec, deferred. Only `realstory` shipped as the CLI anchor.
+
+- **`arch_compliance` 6th efficiency-score dimension** — TODO comment at `analyzer.py:1172` only. Revisit when `compliance_events` has 2+ weeks of data (127 rows today, mostly passes — thin signal).
+
+- **`skill_usage` and `generated_hooks` tables empty** — schema exists; no writers. Needs v3.2 JSONL tool-call extraction (skill_usage) and a hook generator (generated_hooks).
+
+- **Cron watchdog still has a pre-bind race** — the pidfile lock is the second defensive layer; the watchdog's `pgrep`/endpoint probe logic itself could be tightened (detects "no process" before the port bind completes). Fine as-is for now.
+
+- **Medium-severity findings carried from Session 19/20**: `_NO_DASH_KEY` bypass fragility (server.py:650), missing negative-path test for `/api/claude-ai/sync` token, `MODEL_PRICING` refresh procedure (config.py:81-84). Still open.
