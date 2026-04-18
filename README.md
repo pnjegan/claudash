@@ -192,6 +192,38 @@ page to modify accounts.
 | `python3 cli.py keys` | Print `dashboard_key` and `sync_token` (sensitive) |
 | `python3 cli.py claude-ai` | Show claude.ai browser tracking status |
 | `python3 cli.py sync-daemon` | Auto-sync browser data every 5 min (foreground) |
+| `python3 cli.py backup` | Hot-copy DB + JSON fixes export to `~/.claudash/backups/` |
+| `python3 cli.py restore --file PATH` | Restore DB from a backup, restart dashboard |
+
+## Backup and Recovery
+
+Claudash stores data in `data/usage.db`. Back it up regularly:
+
+```bash
+python3 cli.py backup
+```
+
+This creates `~/.claudash/backups/claudash-YYYYMMDD_HH.db` (via sqlite3's hot-backup API — safe while the dashboard is running) plus a JSON sidecar containing the `fixes` and `fix_measurements` tables. Retention is automatic: the 24 most-recent hourly backups plus one per calendar day for the last 7 days.
+
+Flags:
+- `--output DIR` — write somewhere other than `~/.claudash/backups/`
+- `--quiet` — suppress stdout (exit code still signals success/failure)
+
+For automated hourly backups, add to crontab:
+
+```
+0 * * * * cd /path/to/claudash && python3 cli.py backup --quiet
+```
+
+To restore from a backup:
+
+```bash
+python3 cli.py restore --file ~/.claudash/backups/claudash-20260418_04.db
+```
+
+`restore` stops the running dashboard (via the PID lock at `/tmp/claudash.pid`), takes a defensive copy of the current DB to `data/usage.db.pre-restore.<timestamp>`, swaps in the backup, runs `PRAGMA integrity_check`, prints row counts, and restarts the dashboard.
+
+For offsite backup, sync `~/.claudash/backups/` to any cloud storage. Your irreplaceable data is in `fixes` and `fix_measurements` — everything else regenerates from your `~/.claude/projects/` JSONL files on the next `scan`.
 
 ## How Claudash differs from similar tools
 

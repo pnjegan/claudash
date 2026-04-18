@@ -33,6 +33,11 @@ Commands:
   insights      Show active insights
   window        Show 5-hour window status
   export        Export last 30 days to CSV
+  backup        Hot-copy DB + JSON fixes export to ~/.claudash/backups/
+                Flags: --output DIR (override path), --quiet (no stdout)
+                Retention: 24 hourly + 7 daily backups
+  restore       Restore from a backup file (stops/restarts dashboard)
+                Usage: python3 cli.py restore --file PATH
   waste         Run waste-pattern detection and print summary
   fixes         List all recorded fixes with current status
   fix add       Interactively record a new fix (captures baseline)
@@ -1239,6 +1244,259 @@ def cmd_realstory():
     print()
 
 
+def _default_backup_dir():
+    return os.path.expanduser("~/.claudash/backups")
+
+
+def _backup_filename(now=None):
+    """claudash-YYYYMMDD_HH.db — hourly precision."""
+    now = now or datetime.now(timezone.utc)
+    return f"claudash-{now.strftime('%Y%m%d_%H')}.db"
+
+
+def _prune_backups(backup_dir, keep_hourly=24, keep_daily=7):
+    """Keep the most recent N hourly backups plus one backup per calendar day
+    for the last M days. Delete the rest. Returns (kept_count, deleted_count).
+
+    Filename shape: claudash-YYYYMMDD_HH.db (also matches *.json sidecars).
+    """
+    import re as _re
+    pat = _re.compile(r"^claudash-(\d{8})_(\d{2})\.db$")
+    files = []
+    for fname in os.listdir(backup_dir):
+        m = pat.match(fname)
+        if m:
+            date_str, hour_str = m.group(1), m.group(2)
+            full = os.path.join(backup_dir, fname)
+            files.append({
+                "path": full, "name": fname,
+                "date": date_str, "hour": hour_str,
+                "mtime": os.path.getmtime(full),
+            })
+    files.sort(key=lambda x: x["mtime"], reverse=True)  # newest first
+
+    keep_paths = set()
+
+    # Hourly: newest N
+    for f in files[:keep_hourly]:
+        keep_paths.add(f["path"])
+
+    # Daily: newest file per date, for the most recent M distinct dates
+    seen_dates = []
+    by_date = {}
+    for f in files:  # already sorted newest-first
+        if f["date"] not in by_date:
+            by_date[f["date"]] = f["path"]
+            seen_dates.append(f["date"])
+        if len(seen_dates) >= keep_daily:
+            break
+    for p in by_date.values():
+        keep_paths.add(p)
+
+    # Delete everything else + their .json sidecars
+    deleted = 0
+    for f in files:
+        if f["path"] in keep_paths:
+            continue
+        try:
+            os.unlink(f["path"])
+            sidecar = f["path"].replace(".db", ".json")
+            if os.path.exists(sidecar):
+                os.unlink(sidecar)
+            deleted += 1
+        except OSError:
+            pass
+
+    return len(keep_paths), deleted
+
+
+def cmd_backup():
+    """Hot sqlite3 backup + JSON export of fixes/fix_measurements.
+
+    Usage: python3 cli.py backup [--output DIR] [--quiet]
+    """
+    quiet = "--quiet" in sys.argv
+    out_dir = _default_backup_dir()
+    if "--output" in sys.argv:
+        i = sys.argv.index("--output")
+        if i + 1 < len(sys.argv):
+            out_dir = os.path.expanduser(sys.argv[i + 1])
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as e:
+        print(f"backup failed: cannot create {out_dir}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    from db import DB_PATH, get_conn
+    if not os.path.exists(DB_PATH):
+        print(f"backup failed: source DB missing at {DB_PATH}", file=sys.stderr)
+        sys.exit(1)
+
+    now = datetime.now(timezone.utc)
+    db_name = _backup_filename(now)
+    db_path = os.path.join(out_dir, db_name)
+    json_path = db_path.replace(".db", ".json")
+
+    try:
+        # 1. Hot copy via sqlite3 backup API (safe with WAL + live readers)
+        src = get_conn()
+        dst = __import__("sqlite3").connect(db_path)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+
+        # 2. JSON export of fixes + fix_measurements
+        export_conn = __import__("sqlite3").connect(DB_PATH, timeout=30)
+        export_conn.row_factory = __import__("sqlite3").Row
+        fixes = [dict(r) for r in export_conn.execute("SELECT * FROM fixes").fetchall()]
+        meas = [dict(r) for r in export_conn.execute(
+            "SELECT * FROM fix_measurements").fetchall()]
+        export_conn.close()
+
+        with open(json_path, "w") as f:
+            json.dump({
+                "exported_at": now.isoformat(),
+                "fixes": fixes,
+                "fix_measurements": meas,
+            }, f, indent=2, default=str)
+
+        # 3. Prune old backups
+        kept, deleted = _prune_backups(out_dir, keep_hourly=24, keep_daily=7)
+    except Exception as e:
+        print(f"backup failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    db_size = os.path.getsize(db_path) / (1024 * 1024)
+    if not quiet:
+        print(f"Claudash backup — {now.strftime('%Y-%m-%d %H:%M UTC')}")
+        print(f"  DB:         {db_path}  ({db_size:.2f} MB)")
+        print(f"  JSON:       {json_path}  "
+              f"(fixes={len(fixes)}, measurements={len(meas)})")
+        print(f"  Retention:  {kept} backups kept, {deleted} pruned")
+    sys.exit(0)
+
+
+def cmd_restore():
+    """Restore from a backup file.
+
+    Usage: python3 cli.py restore --file PATH
+    """
+    src_path = None
+    if "--file" in sys.argv:
+        i = sys.argv.index("--file")
+        if i + 1 < len(sys.argv):
+            src_path = os.path.expanduser(sys.argv[i + 1])
+    if not src_path:
+        print("Usage: python3 cli.py restore --file PATH", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(src_path):
+        print(f"restore failed: file not found: {src_path}", file=sys.stderr)
+        sys.exit(1)
+
+    from db import DB_PATH
+
+    # 1. Stop running dashboard if any
+    restarted_pid = None
+    if os.path.exists(_PIDFILE):
+        try:
+            with open(_PIDFILE) as f:
+                existing_pid = int(f.read().strip() or "0")
+            if existing_pid > 0:
+                try:
+                    os.kill(existing_pid, 15)  # SIGTERM
+                    restarted_pid = existing_pid
+                    print(f"Stopped dashboard pid {existing_pid}")
+                    # Wait up to 10s for graceful shutdown
+                    for _ in range(20):
+                        try:
+                            os.kill(existing_pid, 0)
+                            time.sleep(0.5)
+                        except ProcessLookupError:
+                            break
+                except (ProcessLookupError, PermissionError):
+                    pass
+        except (ValueError, OSError):
+            pass
+
+    # 2. Defensive backup of current DB before overwriting
+    if os.path.exists(DB_PATH):
+        safety = DB_PATH + ".pre-restore." + datetime.now(timezone.utc).strftime(
+            "%Y%m%d_%H%M%S")
+        try:
+            import shutil
+            shutil.copy2(DB_PATH, safety)
+            print(f"Safety copy: {safety}")
+        except Exception as e:
+            print(f"restore failed: could not create safety copy: {e}",
+                  file=sys.stderr)
+            sys.exit(1)
+
+    # 3. Copy backup → DB_PATH
+    try:
+        import shutil
+        shutil.copy2(src_path, DB_PATH)
+        # Remove WAL/SHM sidecars from the old DB — they refer to a
+        # different content identity now.
+        for suffix in ("-wal", "-shm"):
+            p = DB_PATH + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+    except Exception as e:
+        print(f"restore failed: copy error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # 4. Integrity check
+    try:
+        chk = __import__("sqlite3").connect(DB_PATH, timeout=30)
+        result = chk.execute("PRAGMA integrity_check").fetchone()[0]
+        chk.close()
+        if result != "ok":
+            print(f"restore failed: integrity_check returned '{result}'",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"Integrity check: {result}")
+    except Exception as e:
+        print(f"restore failed: integrity_check error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # 5. Row counts from restored DB
+    try:
+        rc = __import__("sqlite3").connect(DB_PATH, timeout=30)
+        for table in ("sessions", "fixes", "fix_measurements",
+                      "insights", "waste_events", "lifecycle_events",
+                      "compliance_events"):
+            try:
+                n = rc.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                print(f"  {table}: {n}")
+            except Exception:
+                print(f"  {table}: (missing or error)")
+        rc.close()
+    except Exception as e:
+        print(f"row-count inspection failed: {e}", file=sys.stderr)
+
+    # 6. Relaunch dashboard if we stopped it
+    if restarted_pid is not None:
+        import subprocess
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "server.log")
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__),
+             "dashboard", "--no-browser", "--skip-init"],
+            stdout=open(log_path, "a"),
+            stderr=__import__("subprocess").STDOUT,
+            start_new_session=True,
+        )
+        print("Dashboard restarted (detached)")
+
+    print("Restore complete.")
+    sys.exit(0)
+
+
 def cmd_sync_daemon():
     """Run the sync daemon that pushes claude.ai browser data every 5 min."""
     daemon = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1521,6 +1779,8 @@ def main():
         "claude-ai": cmd_claude_ai,
         "sync-daemon": cmd_sync_daemon,
         "realstory": cmd_realstory,
+        "backup": cmd_backup,
+        "restore": cmd_restore,
     }
 
     handler = commands.get(cmd)
