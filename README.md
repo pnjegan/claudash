@@ -124,32 +124,42 @@ Full setup walkthrough in [SETUP.md](SETUP.md).
 
 ## Keeping it running
 
-### Simple (background process)
+Claudash uses a built-in auto-restart loop with a PID lock at `/tmp/claudash.pid` to prevent duplicate processes. No external process manager required (as of v3.1).
+
+### Start
 
 ```bash
-nohup python3 cli.py dashboard > claudash.log 2>&1 &
+nohup python3 cli.py dashboard --no-browser --skip-init > logs/server.log 2>&1 &
 ```
 
-### Recommended (PM2 — auto-restarts on crash)
-
-```bash
-bash tools/setup-pm2.sh
-```
+The PID lock enforces singleton semantics — a second `cli.py dashboard` invocation will exit 1 with `Claudash already running (pid N)`.
 
 ### Check if running
 
 ```bash
-curl http://localhost:8080/health
-# or with PM2:
-pm2 status
+curl http://localhost:8080/api/health -H "X-Dashboard-Key: $(python3 cli.py keys | grep dashboard_key | awk '{print $NF}')"
 ```
 
 ### View logs
 
 ```bash
-tail -f /tmp/claudash.log
-# or with PM2:
-pm2 logs claudash
+tail -f logs/server.log
+```
+
+### Stop
+
+```bash
+kill $(cat /tmp/claudash.pid)
+```
+
+SIGTERM triggers atexit cleanup, so the pidfile is removed automatically (v3.3).
+
+### Reboot survival
+
+Use a small systemd unit or crontab `@reboot` entry:
+
+```
+@reboot cd /path/to/claudash && nohup python3 cli.py dashboard --no-browser --skip-init > logs/server.log 2>&1 &
 ```
 
 ## Two sync methods for claude.ai browser data

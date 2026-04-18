@@ -83,14 +83,30 @@ _PIDFILE = "/tmp/claudash.pid"
 _pid_lock_handle = None
 
 
+def _cleanup_pidfile():
+    """Module-level pidfile remover — called by atexit AND the SIGTERM
+    handler so the file is removed on both clean exit and signal-triggered
+    termination."""
+    try:
+        if os.path.exists(_PIDFILE):
+            os.unlink(_PIDFILE)
+    except OSError:
+        pass
+
+
 def _acquire_pid_lock():
     """Prevent a second cli.py dashboard from starting. Returns the open
     file handle; fcntl.flock is released only when the handle is closed
     (process exit). Open in 'a+' mode so the file isn't truncated before
-    the lock attempt — the losing process needs to read the winner's PID."""
+    the lock attempt — the losing process needs to read the winner's PID.
+
+    v3.3: installs a SIGTERM handler that calls sys.exit(0) so atexit
+    cleanup fires on `kill <pid>`. Before this, atexit only ran on clean
+    Python interpreter exit — SIGTERM left the pidfile stale (BUG-M05).
+    """
     import fcntl as _fcntl
     import atexit as _atexit
-    import os as _os
+    import signal as _signal
     pf = open(_PIDFILE, "a+")
     try:
         _fcntl.flock(pf, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
@@ -105,17 +121,25 @@ def _acquire_pid_lock():
     # Won the lock — truncate and write our pid
     pf.seek(0)
     pf.truncate()
-    pf.write(str(_os.getpid()))
+    pf.write(str(os.getpid()))
     pf.flush()
 
-    def _cleanup():
-        try:
-            if _os.path.exists(_PIDFILE):
-                _os.unlink(_PIDFILE)
-        except OSError:
-            pass
+    _atexit.register(_cleanup_pidfile)
 
-    _atexit.register(_cleanup)
+    # SIGTERM handler: exit cleanly so atexit fires and pidfile is removed.
+    # (SIGKILL cannot be caught — pidfile will still leak there; next
+    # starter's flock succeeds anyway because kernel releases the lock.)
+    def _on_sigterm(signum, frame):
+        _cleanup_pidfile()
+        sys.exit(0)
+
+    try:
+        _signal.signal(_signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):
+        # signal.signal() fails in non-main threads; ignore if we're
+        # somehow called from one (shouldn't happen in cmd_dashboard).
+        pass
+
     return pf
 
 
@@ -1245,7 +1269,18 @@ def cmd_realstory():
 
 
 def _default_backup_dir():
-    return os.path.expanduser("~/.claudash/backups")
+    """Default backup directory.
+
+    Matches the pre-v3.3 cron + rclone path so `cli.py backup` output is
+    automatically picked up by the existing offsite sync (Google Drive /
+    other rclone remotes).
+
+    Override via `--output DIR` on the CLI or `CLAUDASH_BACKUP_DIR` env var.
+    """
+    override = os.environ.get("CLAUDASH_BACKUP_DIR")
+    if override:
+        return os.path.expanduser(override)
+    return "/root/backups/claudash"
 
 
 def _backup_filename(now=None):
