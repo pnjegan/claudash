@@ -1,6 +1,7 @@
 """Insights engine — runs after every scan, generates actionable insights."""
 
 import json
+import sqlite3
 import time
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -54,6 +55,8 @@ def generate_insights(conn=None):
     if conn is None:
         conn = get_conn()
         should_close = True
+    if conn.row_factory is None:
+        conn.row_factory = sqlite3.Row
 
     ACCOUNTS = get_accounts_config(conn)
     PROJECT_MAP = get_project_map_config(conn)
