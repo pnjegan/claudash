@@ -1296,3 +1296,64 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 - **Cron watchdog still has a pre-bind race** — the pidfile lock is the second defensive layer; the watchdog's `pgrep`/endpoint probe logic itself could be tightened (detects "no process" before the port bind completes). Fine as-is for now.
 
 - **Medium-severity findings carried from Session 19/20**: `_NO_DASH_KEY` bypass fragility (server.py:650), missing negative-path test for `/api/claude-ai/sync` token, `MODEL_PRICING` refresh procedure (config.py:81-84). Still open.
+
+## [2026-04-18] Session 22 — v3.2.0 Truth-first sub-agent intelligence
+
+### Fixed
+- **Classifier hallucination in `classify_subagent_work()`** — the biggest correctness issue discovered in the v3.2 pre-flight audit. v3.1's heuristic used `tool_call_count` as a proxy for mechanical work, but a session with 17 tools and 686 turns (~40 turns per tool call — mostly conversation between sparse tool uses) was being classified as mechanical. Real-world example: Tidify's `f5939e9e-310` ($223.30) and `4b221781-7cc` ($160.04) were both marked mechanical when the prompt evidence showed comprehensive audit work.
+
+  New guard at `analyzer.py:classify_subagent_work()`: when score==0, only return `mechanical` if `turns_per_tool <= 10` (tool-dense). Text-heavy sessions (turns/tools > 10) fall through to `mixed` — we cannot confidently say mechanical.
+
+  Impact on real data (Tidify project):
+    mechanical sessions:  4 → **1**
+    mechanical cost:      $547.81 → **$19.09** (~87% was hallucinated)
+    haiku_savings claim:  $520.42 → **$18.14** (honest; verify-caveat attached)
+
+- **Test regressions from v3.1**: `TEST-R-02` (non-stdlib imports) and `TEST-I-02` (PM2 process) failed on the v3.1 baseline — neither discovered at v3.1 ship time. Both fixed:
+  - TEST-R-02: added `fcntl` and `atexit` to stdlib allowlist (v3.1 PID lock imports).
+  - TEST-I-02: renamed to "Process supervision". PID lock OR PM2 both count; PM2 is deprecated in v3.1.
+
+### Added
+- **`sessions.prompt_quality` column** (TEXT, nullable). Values: `scoped` / `balanced` / `unbounded` / `unknown`. Populated only for sub-agent sessions by scanner. NULL for main sessions.
+
+- **`scanner.extract_subagent_prompt(source_path)`** — reads the first user-message text from a sub-agent JSONL file. Never raises; returns None on any error. Verified 37/37 sub-agent JSONL files readable.
+
+- **`scanner.score_prompt_quality(text)`** — returns dict with verdict + exact amplifier/constraint phrases found as evidence. Returns `unknown` for empty prompts (never a confident score without evidence).
+
+- **Backfill**: `prompt_quality` populated for all 37 existing sub-agent sessions. Distribution: scoped 17, balanced 2, unbounded 18, unknown 0.
+
+- **Insight rule 21 — `unbounded_subagent_prompt`** (insights.py:~566). Fires when `prompt_quality='unbounded'` AND session cost > project avg. Debounce 168h per-session (prompts are immutable). Evidence field stores exact amplifier phrases + cost ratio. Emits 7 real insights on current DB:
+    Tidify 913fbebe-3c3    $464.93  5.1× avg  amps=[every finding, thorough, very thorough]
+    Claudash 59951147-43f  $258.00  4.6× avg  amps=[thorough]
+    Tidify 4b221781-7cc    $160.04  1.8× avg
+    Tidify f99d939c-922    $153.70  1.7× avg
+    Tidify 5a90701d-49d    $145.38  1.6× avg
+    Tidify 4c7e419f-f43    $140.59  1.6× avg
+    Tidify e22a1a2f-3af    $93.64   1.0× avg
+  Message framing is non-prescriptive ("consider adding a file list" not "you did it wrong") — several flagged prompts are legitimate audits that need to be thorough.
+
+- **`db.detect_subagent_file_redundancy(conn, project=None, days=30)`** — function only; insight rule deferred. Ships 0 verified cases today (documented limitation: sub-agent session_id collapse per Claude Code JSONL format). Function is ready for the deferred agent-hash session_id fix — will return real rows without code changes when that lands.
+
+- **`analyzer.subagent_intelligence()` per-session fields extended**: `turns` (COUNT(*) of per-turn rows), `turns_per_tool` (rounded), `cost_per_turn` (USD), `prompt_quality`. Plus per-project `haiku_savings_caveat` field with verify-before-acting hedging text.
+
+- **Defensive UUID validation in `scanner._parse_subagent_info()`** — regex check on the parent-folder name before storing as `parent_session_id`. Garbage folder names now yield `(1, None)` rather than storing non-UUID strings. New docstring explains the "session_id == parent_session_id" pattern (Claude Code JSONL format property, not a scanner bug).
+
+- **Tests**: SA-006 (turns-per-tool guard against the real-world f5939e9e-310 hallucination case), SA-007 (`prompt_quality` column exists). New `v3.2` section in `claudash_test_runner.py`. Full suite 27/30 pass, 0 FAIL, 2 WARN (git uncommitted + server-health cache lag), 1 SKIP (fix generator needs API key).
+
+### Architecture Decisions
+- **Truth-first principle**: every new insight must show a DB row or JSONL line that proves it. No assumptions, no extrapolations. Rule 20 (file redundancy) doesn't ship because 0 verified cases exist — the detection function ships, waiting for real data to justify a rule. Rule 21 ships because 7 unbounded-and-expensive sessions are visible and each carries its own evidence.
+
+- **Backward-compat field name preserved**: `haiku_savings_estimate` kept its original key name (v3.1's `TEST-SA-004` asserted it). The caveat is a new sibling field `haiku_savings_caveat`, not a rename.
+
+- **Classifier hedge via caveat field, not number change**: `haiku_savings_estimate` remains `mechanical_cost × 0.95`. What changed is (a) mechanical_cost itself dropped 87% due to the hallucination fix, so the number is now honest; (b) the caveat field explicitly tells UI consumers to verify per-session before acting. The dashboard renders the number + caveat together.
+
+### Known Issues / Not Done
+- **Sub-agent session_id ≠ agent-<hash>**: 147 sub-agent JSONL files collapse to ~35 DB rows. Fix deferred — requires using `agent-<hash>` from filename as session_id instead of the sessionId field inside JSONL content (which contains the parent's UUID). Documented in `scanner._parse_subagent_info()` docstring and MEMORY.md. `detect_subagent_file_redundancy()` is pre-built to light up when this lands.
+
+- **PID lock cleanup on SIGTERM**: observed during this session's restart — atexit does not fire on SIGTERM by default in Python (only on clean interpreter exit or signal handlers that call sys.exit). The stale pidfile is harmless (next starter's flock succeeds because the kernel released the lock on process exit; the file content gets overwritten), but cosmetically the "pidfile after kill: 3082680" shows a phantom entry. Fix in v3.3: add `signal.signal(SIGTERM, lambda *_: sys.exit(0))` so atexit fires.
+
+- **TEST-SA-004** asserts `haiku_savings_estimate` field name. If we ever rename that field, the test breaks. Documented here so a future-me remembers before touching the field name.
+
+- **Rule 19 (`subagent_model_waste`)** still latent — no project crosses the 30% mechanical-share threshold. After the classifier fix, Tidify dropped from 20.9% to ~1% (19.09/2619 ≈ 0.7%), so rule 19 is now further from firing. Correct: reduced hallucination means less false urgency.
+
+- **Carried forward from Session 19/20/21**: `_NO_DASH_KEY` bypass fragility, `MODEL_PRICING` refresh, missing `/api/claude-ai/sync` negative-path test. Still open.
