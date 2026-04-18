@@ -649,6 +649,136 @@ def subagent_metrics(conn, account="all"):
     return result
 
 
+# ── v3.1 — Sub-agent work classification ──
+
+def classify_subagent_work(s):
+    """Classify a single sub-agent session's work as mechanical / mixed /
+    reasoning. Input is a dict with the session-aggregate tool counts.
+
+    Heuristic (additive score):
+      write > 0                  → +2  (producing code = reasoning)
+      mcp_count > 2              → +1
+      max_output_tokens >= 2000  → +1
+      tool_call_count >= 40      → +1  (high volume = investigation)
+      bash > 15 AND write > 0    → +1  (build-test-iterate)
+
+    score == 0  → mechanical
+    score >= 2  → reasoning
+    else        → mixed
+    """
+    write = s.get("write_count") or 0
+    mcp = s.get("mcp_count") or 0
+    max_out = s.get("max_output_tokens") or 0
+    tools = s.get("tool_call_count") or 0
+    bash = s.get("bash_count") or 0
+
+    score = 0
+    if write > 0:
+        score += 2
+    if mcp > 2:
+        score += 1
+    if max_out >= 2000:
+        score += 1
+    if tools >= 40:
+        score += 1
+    if bash > 15 and write > 0:
+        score += 1
+
+    if score == 0:
+        return "mechanical"
+    if score >= 2:
+        return "reasoning"
+    return "mixed"
+
+
+def subagent_intelligence(conn, account="all"):
+    """Per-project sub-agent work classification with Haiku savings estimate.
+
+    Returns {project: {mechanical_count, mechanical_cost, reasoning_count,
+    reasoning_cost, mixed_count, mixed_cost, total_subagent_cost,
+    haiku_savings_estimate, top_sessions: [...], verdict}}.
+
+    Verdict:
+      optimize_possible  → mechanical_cost / total > 30%
+      review_mechanical  → mechanical_count > 0 (but not dominant)
+      justified          → no mechanical work"""
+    acct_filter = None if account == "all" else account
+    where = "is_subagent=1"
+    params = []
+    if acct_filter:
+        where += " AND account=?"
+        params.append(acct_filter)
+
+    rows = conn.execute(
+        "SELECT session_id, project, "
+        "       SUM(cost_usd) AS cost_usd, "
+        "       MAX(tool_call_count) AS tool_call_count, "
+        "       MAX(bash_count) AS bash_count, "
+        "       MAX(read_count) AS read_count, "
+        "       MAX(write_count) AS write_count, "
+        "       MAX(grep_count) AS grep_count, "
+        "       MAX(mcp_count) AS mcp_count, "
+        "       MAX(max_output_tokens) AS max_output_tokens "
+        "FROM sessions WHERE " + where + " "
+        "GROUP BY session_id "
+        "ORDER BY cost_usd DESC",
+        params,
+    ).fetchall()
+
+    result = {}
+    for r in rows:
+        s = dict(r)
+        project = s["project"] or "Other"
+        classification = classify_subagent_work(s)
+
+        if project not in result:
+            result[project] = {
+                "mechanical_count": 0, "mechanical_cost": 0.0,
+                "reasoning_count": 0, "reasoning_cost": 0.0,
+                "mixed_count": 0, "mixed_cost": 0.0,
+                "top_sessions": [],
+            }
+
+        p = result[project]
+        cost = s["cost_usd"] or 0.0
+
+        if classification == "mechanical":
+            p["mechanical_count"] += 1
+            p["mechanical_cost"] += cost
+        elif classification == "reasoning":
+            p["reasoning_count"] += 1
+            p["reasoning_cost"] += cost
+        else:
+            p["mixed_count"] += 1
+            p["mixed_cost"] += cost
+
+        p["top_sessions"].append({
+            "session_id": (s["session_id"] or "")[:12],
+            "classification": classification,
+            "tool_call_count": s["tool_call_count"] or 0,
+            "cost_usd": round(cost, 4),
+        })
+
+    for project, p in result.items():
+        total = p["mechanical_cost"] + p["reasoning_cost"] + p["mixed_cost"]
+        p["total_subagent_cost"] = round(total, 4)
+        # Haiku is ~95% cheaper than Opus on input/output; mechanical work
+        # would run on Haiku with near-identical outcomes.
+        p["haiku_savings_estimate"] = round(p["mechanical_cost"] * 0.95, 4)
+        p["top_sessions"] = sorted(
+            p["top_sessions"], key=lambda x: x["cost_usd"], reverse=True
+        )[:5]
+
+        if total > 0 and (p["mechanical_cost"] / total) > 0.30:
+            p["verdict"] = "optimize_possible"
+        elif p["mechanical_count"] > 0:
+            p["verdict"] = "review_mechanical"
+        else:
+            p["verdict"] = "justified"
+
+    return result
+
+
 # ── Context rot (v2-F2) ──
 
 _CONTEXT_ROT_BUCKET_SIZE = 10
