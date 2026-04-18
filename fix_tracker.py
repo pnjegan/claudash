@@ -419,6 +419,16 @@ def determine_verdict(delta, plan_type, sessions_since):
         return "worsened"
 
     if plan_type in ("max", "pro"):
+        # Cost+turns override: effective_window_pct is a ratio
+        # (waste_tokens / total_tokens). When a fix shrinks total_tokens
+        # faster than waste_tokens (e.g. trimmed CLAUDE.md), the ratio
+        # can degrade even though cost and turn count fell. Treat a
+        # simultaneous drop in cost and avg_turns_per_session as
+        # unambiguous improvement and short-circuit the ratio check.
+        cost_pct = delta.get("cost_usd", {}).get("pct_change", 0) or 0
+        turns_pct = delta.get("avg_turns_per_session", {}).get("pct_change", 0) or 0
+        if cost_pct <= -20 and turns_pct <= -20:
+            return "improving"
         eff_pct = delta["effective_window_pct"]["pct_change"]
         if eff_pct >= WINDOW_IMPROVING_PCT:
             return "improving"
