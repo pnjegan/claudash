@@ -697,6 +697,117 @@ def test_monitoring():
 
     db.close()
 
+# ── SECTION v3.1: SUB-AGENT CLASSIFICATION ───────────────────────────────────
+
+def test_sa_001_mechanical_classification():
+    """Low-activity bash-heavy session classifies as mechanical."""
+    try:
+        from analyzer import classify_subagent_work
+        s = {"write_count": 0, "mcp_count": 0, "max_output_tokens": 500,
+             "tool_call_count": 10, "bash_count": 8}
+        result = classify_subagent_work(s)
+        if result == "mechanical":
+            record("TEST-SA-001", "Mechanical classification", "PASS",
+                   f"classify returned {result}")
+        else:
+            record("TEST-SA-001", "Mechanical classification", "FAIL",
+                   f"expected 'mechanical', got '{result}'")
+    except Exception as e:
+        record("TEST-SA-001", "Mechanical classification", "FAIL", str(e))
+
+
+def test_sa_002_reasoning_classification():
+    """High-write, high-output session classifies as reasoning."""
+    try:
+        from analyzer import classify_subagent_work
+        s = {"write_count": 5, "mcp_count": 0, "max_output_tokens": 3000,
+             "tool_call_count": 67, "bash_count": 30}
+        result = classify_subagent_work(s)
+        if result == "reasoning":
+            record("TEST-SA-002", "Reasoning classification", "PASS",
+                   f"classify returned {result}")
+        else:
+            record("TEST-SA-002", "Reasoning classification", "FAIL",
+                   f"expected 'reasoning', got '{result}'")
+    except Exception as e:
+        record("TEST-SA-002", "Reasoning classification", "FAIL", str(e))
+
+
+def test_sa_003_mixed_classification():
+    """Single-signal session classifies as mixed (score=1)."""
+    try:
+        from analyzer import classify_subagent_work
+        s = {"write_count": 0, "mcp_count": 3, "max_output_tokens": 1800,
+             "tool_call_count": 25, "bash_count": 10}
+        result = classify_subagent_work(s)
+        if result == "mixed":
+            record("TEST-SA-003", "Mixed classification", "PASS",
+                   f"classify returned {result}")
+        else:
+            record("TEST-SA-003", "Mixed classification", "FAIL",
+                   f"expected 'mixed', got '{result}'")
+    except Exception as e:
+        record("TEST-SA-003", "Mixed classification", "FAIL", str(e))
+
+
+def test_sa_004_intelligence_structure():
+    """subagent_intelligence returns dict with expected keys per project."""
+    try:
+        import db
+        from analyzer import subagent_intelligence
+        conn = db.get_conn()
+        try:
+            result = subagent_intelligence(conn, "personal_max")
+        finally:
+            conn.close()
+        if not isinstance(result, dict):
+            record("TEST-SA-004", "subagent_intelligence structure", "FAIL",
+                   f"expected dict, got {type(result).__name__}")
+            return
+        required = {"verdict", "haiku_savings_estimate", "top_sessions",
+                    "mechanical_count", "reasoning_count", "mixed_count"}
+        valid_verdicts = {"justified", "review_mechanical", "optimize_possible"}
+        fails = []
+        for proj, data in result.items():
+            missing = required - set(data.keys())
+            if missing:
+                fails.append(f"{proj} missing: {missing}")
+            if data.get("verdict") not in valid_verdicts:
+                fails.append(f"{proj} verdict='{data.get('verdict')}' invalid")
+        if fails:
+            record("TEST-SA-004", "subagent_intelligence structure", "FAIL",
+                   "; ".join(fails))
+        else:
+            record("TEST-SA-004", "subagent_intelligence structure", "PASS",
+                   f"{len(result)} projects classified correctly")
+    except Exception as e:
+        record("TEST-SA-004", "subagent_intelligence structure", "FAIL", str(e))
+
+
+def test_sa_005_schema_has_tool_columns():
+    """sessions table has all 8 tool classification columns."""
+    try:
+        import db
+        conn = db.get_conn()
+        try:
+            cols = [r[1] for r in conn.execute(
+                "PRAGMA table_info(sessions)").fetchall()]
+        finally:
+            conn.close()
+        expected = ["tool_call_count", "bash_count", "read_count", "write_count",
+                    "grep_count", "mcp_count", "max_output_tokens",
+                    "work_classification"]
+        missing = [c for c in expected if c not in cols]
+        if missing:
+            record("TEST-SA-005", "Tool classification schema", "FAIL",
+                   f"missing columns: {missing}")
+        else:
+            record("TEST-SA-005", "Tool classification schema", "PASS",
+                   f"all 8 tool columns present")
+    except Exception as e:
+        record("TEST-SA-005", "Tool classification schema", "FAIL", str(e))
+
+
 # ── TEST REGISTRY ──────────────────────────────────────────────────────────────
 
 ALL_TESTS = {
@@ -731,13 +842,20 @@ ALL_TESTS = {
         ("TEST-R-03", "MCP tool count", test_r03_mcp_tool_count),
         ("TEST-R-04", "Git status", test_r04_git_clean),
     ],
+    "v3.1": [
+        ("TEST-SA-001", "Mechanical classification", test_sa_001_mechanical_classification),
+        ("TEST-SA-002", "Reasoning classification", test_sa_002_reasoning_classification),
+        ("TEST-SA-003", "Mixed classification", test_sa_003_mixed_classification),
+        ("TEST-SA-004", "subagent_intelligence structure", test_sa_004_intelligence_structure),
+        ("TEST-SA-005", "Tool classification schema", test_sa_005_schema_has_tool_columns),
+    ],
 }
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Claudash test runner")
-    parser.add_argument("--section", choices=["infra","v1","v2","regression","all"],
+    parser.add_argument("--section", choices=["infra","v1","v2","v3.1","regression","all"],
                         default="all")
     parser.add_argument("--test", help="Run single test by ID (e.g. TEST-V2-F1)")
     parser.add_argument("--monitor", action="store_true",
