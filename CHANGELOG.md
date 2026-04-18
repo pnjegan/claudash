@@ -1357,3 +1357,57 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 - **Rule 19 (`subagent_model_waste`)** still latent — no project crosses the 30% mechanical-share threshold. After the classifier fix, Tidify dropped from 20.9% to ~1% (19.09/2619 ≈ 0.7%), so rule 19 is now further from firing. Correct: reduced hallucination means less false urgency.
 
 - **Carried forward from Session 19/20/21**: `_NO_DASH_KEY` bypass fragility, `MODEL_PRICING` refresh, missing `/api/claude-ai/sync` negative-path test. Still open.
+
+## [2026-04-18] Session 23 — v3.3.0 Backup/Restore CLI + bug-hunt fixes
+
+### Added
+- **`cli.py backup [--output DIR] [--quiet]`** — hot sqlite3 `conn.backup()` + JSON export of `fixes` + `fix_measurements`. Retention: union of last 24 hourly + last 7 daily (one per calendar date). Exits 0 on success, 1 on failure. Verified on live 13.5 MB DB: backup + 138 KB JSON fixture, integrity_check=ok, all row counts match source.
+
+- **`cli.py restore --file PATH`** — stops dashboard via SIGTERM, creates defensive `data/usage.db.pre-restore.<ts>` copy, removes stale WAL/SHM sidecars, swaps in the backup, runs `PRAGMA integrity_check` (abort on failure), prints row counts across 7 tables, relaunches dashboard detached. Round-trip verified: stopped pid 3159765, restarted as 3173257, port bound, 23013 records visible via `/api/health`.
+
+- **README "Backup and Recovery" section** — documents backup command, crontab snippet for hourly automation, restore flow, and offsite-sync guidance.
+
+### Fixed
+- **BUG-M04 — Backup path fragmentation.** `_default_backup_dir()` now returns `/root/backups/claudash/` (was `~/.claudash/backups/`). This matches the pre-existing cron + rclone-to-Google-Drive pipeline. New `cli.py backup` output is now automatically synced offsite. Override path via `CLAUDASH_BACKUP_DIR` env var or `--output DIR` flag. Filename pattern `claudash-YYYYMMDD_HH.db` doesn't collide with the cron's `claudash-db-{hourly,daily}-*.db` pattern; retention regex touches only our files.
+  Files: cli.py
+
+- **BUG-M05 — SIGTERM didn't trigger atexit pidfile cleanup.** Added `signal.signal(SIGTERM, lambda *_: sys.exit(0))` inside `_acquire_pid_lock()`. `_cleanup` promoted from local closure to module-level `_cleanup_pidfile()` so both atexit and the signal handler reference the same function. Verified: `kill -TERM <pid>` of a v3.3-coded dashboard now removes `/tmp/claudash.pid`; a pre-v3.3 dashboard still leaks (confirming the fix landed only for new code).
+  Files: cli.py
+
+- **BUG-M06 — Stale PM2 docs.** Deleted `tools/setup-pm2.sh`. Rewrote README "Keeping it running" section: PID lock is canonical, no PM2. Added `@reboot` crontab snippet for reboot survival.
+  Files: tools/setup-pm2.sh (deleted), README.md
+
+### Bug hunt (v3.2 audit — full report at .dev-cdc/BUG_HUNT_V32_20260418.md)
+
+Audited 8 dimensions: data integrity, scanner accuracy, fix measurement, security, context leaks, waste detection, schema drift, dead code. 10 bugs found, 0 CRITICAL, 0 v3.3 blockers.
+
+Action item executed:
+- Ran `cli.py measure 12` — fix#12 (WikiLoop, repeated_reads) now has 1 measurement. Verdict=insufficient_data (1 day, 0 post-fix sessions). Raw trend is bad: events 5 → 7 (+40%). Requires 7+ days of observation before the verdict can reliably flip.
+
+Fixed this session: M04, M05, M06 (see above).
+
+Deferred (documented, not auto-fixed):
+- **M01 fix#11 verdict=worsened** (Tidify repeated_reads — CLAUDE.md trim+split). Needs manual review before revert.
+- **M02 fix#14 verdict=worsened** (Tidify cost_outlier — AI-generated rule). Needs manual review.
+- **M03 fix#12 trend worsening** under insufficient_data verdict — revisit after 7 days.
+- **H01 sub-agent session_id collapse** (147 JSONL → 35 DB rows). Deferred by design per MEMORY.md.
+- **L01 insights.severity** not a column (lives in detail_json). Future schema.
+- **L02 102 "dead" functions** per AST scan — 35+ are false-positives (tests registered by string name). Real count ~30, needs per-function review.
+- **L03 dashboard_key in print()** at cli.py:1638, 1658 — both intentional (keys command retrieval path per HELP_TEXT). False positive.
+
+Negative findings (clean):
+- Schema: all 29 expected sessions columns present.
+- prompt_quality coverage: 35/35 sub-agent sessions populated.
+- 0 sessions with NULL project, 0 compliance events with NULL evidence, 0 fix_measurements with NULL verdict.
+- Floundering detection: 8 events last 7 days (detector active).
+- Live process confirmed on v3.2 code before this session's edits.
+- WAL + busy_timeout=30000 still in effect (Session 19 fix holds).
+
+### Architecture Decisions
+- **Override-via-env for backup path**: chose `CLAUDASH_BACKUP_DIR` (env) plus `--output` (flag) over relocating the path to `~/.claudash/backups/` and asking the user to reconfigure rclone. Cheaper reconciliation — the new CLI adapts to the existing offsite pipeline, not the other way around.
+- **SIGTERM handler installed inside `_acquire_pid_lock()`, not `cmd_dashboard()`**: keeps lock + cleanup logic co-located. The handler uses `try/except ValueError` around `signal.signal()` since that call fails in non-main threads; defensive no-op.
+
+### Known Issues / Not Done
+- **SIGKILL case unchanged**: signal handler can't catch SIGKILL. Pidfile still leaks if someone `kill -9` the process, but the kernel releases the flock anyway so the next start still succeeds (file content gets overwritten). Documented explicitly in the _acquire_pid_lock docstring.
+- **Pre-existing cron's `tables-latest.json` / `fixes-latest.json` outputs remain**: the cron writes these as latest-symlinks; our `cli.py backup` doesn't. Could add in v3.4 for parity.
+- All Deferred bugs above carried forward to future sessions.

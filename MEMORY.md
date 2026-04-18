@@ -1,84 +1,62 @@
-# Claudash — Session 22 State
+# Claudash — Session 23 State
 
-## Current version: 3.2.0
+## Current version: 3.3.0
 
 ## What's live (as of 2026-04-18)
 - v3.0.0: compliance_events table, 4 insight rules
-  (repeated_reads_project, multi_compact_churn,
-  cost_outlier_session, fix_never_measured)
-- v3.0.1: row_factory bug fix in generate_insights()
-- v3.1.0: sub-agent work classification
-  - 8 tool columns in sessions table
-  - classify_subagent_work() + subagent_intelligence()
-  - /api/data includes subagent_intelligence
-  - Dashboard: work classification badges + Haiku savings
-  - Insight rule 19: subagent_model_waste (latent at 30%)
-  - Tests: SA-001 through SA-005 (all pass)
-  - PID lock: duplicate process gap closed
+- v3.0.1: row_factory bug fix
+- v3.1.0: sub-agent work classification + PID lock
 - v3.2.0: truth-first sub-agent intelligence
-  - Classifier hallucination fix — turns_per_tool guard
-    Tidify mechanical: $547.81 → $19.09 (87% was hallucinated)
-  - sessions.prompt_quality column + scorer + backfill
-  - Insight rule 21: unbounded_subagent_prompt (7 real cases)
-  - detect_subagent_file_redundancy() function (rule deferred)
-  - haiku_savings_caveat field alongside estimate
-  - UUID validation in _parse_subagent_info() + JSONL format docstring
-  - Tests: SA-006 + SA-007 added (27/30 pass, 0 FAIL)
+  - Classifier hallucination fix (turns_per_tool guard)
+  - prompt_quality column + rule 21 unbounded_subagent_prompt
+  - detect_subagent_file_redundancy() (rule deferred)
+- v3.3.0: backup/restore CLI + bug-hunt fixes
+  - cli.py backup: hot DB backup + JSON export, 24-slot retention
+  - cli.py restore: safe stop/verify/restart cycle
+  - README: Backup and Recovery section
+  - M04 fix: backup default = /root/backups/claudash/ (rclone-synced)
+  - M05 fix: SIGTERM handler cleans pidfile
+  - M06 fix: PM2 docs removed, PID lock docs added
 
-## Real data (snapshot 2026-04-18, post-v3.2 restart)
-- 74 distinct main sessions / 22,697 turn-rows
-- 37 distinct sub-agent (session_id, source_path) pairs — 35 distinct
-  session_ids due to JSONL format collapse
-- Sub-agent prompt quality distribution:
-  scoped: 17, balanced: 2, unbounded: 18, unknown: 0
-- Tidify: 29 sub-agents, verdict=review_mechanical
-  mechanical: 1 session / $19.09 (honest — was $547 hallucinated)
-  reasoning: 5 / $931.83
-  mixed: 23 / $1668.52
-  haiku_savings_estimate: $18.14 (with verify-before-acting caveat)
-- Claudash: 5 sub-agents, verdict=review_mechanical
-  mechanical: 1 / $1.52  (genuinely tool-dense, tpt=1.44)
-- Brainworks: 1 sub-agent, verdict=justified
-- Active insights: 58 (7 new unbounded_subagent_prompt + all prior)
+## Real data (snapshot 2026-04-18)
+- 74 distinct main sessions / 23,023 turn-rows
+- 35 sub-agent session_ids (147 JSONL files — collapse deferred)
+- Active insights: 53 (7 are unbounded_subagent_prompt from v3.2)
+- 9 fixes tracked: 4 measuring-improving, 2 worsened (#11, #14), 1 just-measured (#12, insufficient_data but trending worse)
 
-## Insight rules currently firing (all with verifiable backing data)
-- model_waste (11), floundering_detected (10), cost_outlier_session (7),
-  unbounded_subagent_prompt (7, v3.2 new), subagent_cost_spike (4),
-  multi_compact_churn (3), repeated_reads_project (3), window_risk (3),
-  fix_regressing (2), window_combined_risk (2), roi_milestone (1),
-  best_window (1), fix_never_measured (1)
-- Rule 19 subagent_model_waste: 0 fires (latent — after hallucination
-  fix, Tidify share dropped to <1%, further from 30% threshold)
-- Rule 20 subagent_file_redundancy: not shipped — 0 verified cases
-  (detection function pre-built; rule earns its existence when data shows)
+## Open bugs from v3.2 hunt (deferred to later sessions)
 
-## Known gaps (deferred to v3.3 or later)
-- Sub-agent session_id should be agent-<hash> from filename (not the
-  parent UUID embedded in JSONL content). Currently 147 sub-agent JSONL
-  files collapse to ~35 DB rows. detect_subagent_file_redundancy() is
-  wired and will light up when this fix lands.
-- PID lock atexit doesn't fire on SIGTERM — pidfile gets stale content
-  after kill. Harmless (kernel releases flock; next starter overwrites)
-  but cosmetic. Fix: signal.signal(SIGTERM, clean_exit) in cli.py.
-- arch_compliance 6th efficiency dimension — TODO at analyzer.py:1172.
-  Needs multi-week compliance_events volume.
-- compliance --score CLI command (deferred).
-- skill_usage + generated_hooks tables exist but empty.
-- Cron watchdog pre-bind race — PID lock is second defensive layer.
+### Needs manual review (not auto-fixable)
+- **M01 fix#11** (Tidify repeated_reads, verdict=worsened) — CLAUDE.md trim+split is degrading the metric. Review the diff before revert.
+- **M02 fix#14** (Tidify cost_outlier, verdict=worsened) — AI-generated rule is degrading the metric. Read the generated text.
+- **M03 fix#12** (WikiLoop repeated_reads) — just measured, verdict=insufficient_data (1 day / 0 post-fix sessions), raw trend +40% events. Revisit after 7 days.
+
+### Deferred design / future schema
+- **H01 sub-agent session_id collapse** — 147 JSONL files → 35 DB rows. Fix requires using `agent-<hash>` from filename as session_id. `detect_subagent_file_redundancy()` is pre-wired and will light up when this lands.
+- **L01 insights.severity** — currently in detail_json. Future column addition.
+- **L02 ~30 genuinely dead functions** (after filtering test_* false positives). Per-function review needed.
+
+## Known fragile areas
+- SIGKILL of dashboard leaves stale /tmp/claudash.pid content (harmless — kernel releases flock; next start overwrites). Only SIGTERM is handled (v3.3 fix).
+- Pre-existing cron writes `claudash-db-{hourly,daily}-*.db` + `latest.json` symlinks to /root/backups/claudash/. Our cli.py backup uses different filename pattern (`claudash-YYYYMMDD_HH.db`). They cohabit; retention regex only touches our pattern.
 
 ## Next session priorities
-1. Consider fixing sub-agent session_id to agent-<hash> — unlocks
-   per-sub-agent tracking and lights up rule 20 automatically.
-2. SIGTERM handler for clean pidfile on kill (tiny fix).
-3. Watch rule 21 accuracy — does the 'unbounded' classification
-   correlate with real cost post-remediation? Tidify 913fbebe-3c3
-   is the most expensive instance — is the audit output worth $464?
-4. Measure fix#12 (WikiLoop, repeated_reads, applied ~48h ago,
-   still 0 measurements) — run: python3 cli.py measure 12
+1. **Manual review of fix#11 and fix#14** — what went wrong? Revert criteria?
+2. **JIT skill loading** — highest-value leak pattern not yet implemented (noted in v3.2 audit).
+3. **VPS system updates** — 36 apt packages upgradable, security patches.
+4. **cli.py compliance --score** command (deferred from v3.0).
+5. After 7 days: re-measure fix#12 WikiLoop; decide revert/keep based on verdict.
+6. Sub-agent session_id redesign (H01) — if per-sub-agent tracking becomes high-value.
 
 ## Startup command
-python3 cli.py dashboard --no-browser --skip-init
+```
+nohup python3 cli.py dashboard --no-browser --skip-init > logs/server.log 2>&1 &
+```
 
 ## PID file
-/tmp/claudash.pid — flock-guarded. atexit clean on interpreter exit;
-stale content remains on SIGTERM (harmless — overwritten by next start).
+`/tmp/claudash.pid` — flock-guarded. atexit + SIGTERM both clean it (v3.3).
+SIGKILL still leaks (kernel-limited — file content stale but flock released).
+
+## Backup path
+`/root/backups/claudash/` — shared with pre-existing cron + rclone-to-Drive.
+Override via `CLAUDASH_BACKUP_DIR` env var or `--output DIR` flag.
