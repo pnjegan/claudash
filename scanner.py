@@ -402,6 +402,56 @@ def detect_lifecycle_events(messages, session_id, project, conn):
     return emitted
 
 
+_WRITE_TOOL_NAMES = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+_READ_TOOL_NAMES = {"Read", "cat", "LS"}
+
+
+def classify_session_tools(messages):
+    """Walk one session's messages, return session-aggregate tool counts.
+
+    Returns a dict with keys:
+      tool_call_count, bash_count, read_count, write_count,
+      grep_count, mcp_count, max_output_tokens
+    """
+    counts = {"tool_call_count": 0, "bash_count": 0, "read_count": 0,
+              "write_count": 0, "grep_count": 0, "mcp_count": 0,
+              "max_output_tokens": 0}
+    for obj in messages:
+        for tu in _iter_assistant_tool_uses(obj):
+            name = tu.get("name") or ""
+            counts["tool_call_count"] += 1
+            if name == "Bash":
+                counts["bash_count"] += 1
+            elif name in _READ_TOOL_NAMES:
+                counts["read_count"] += 1
+            elif name in _WRITE_TOOL_NAMES:
+                counts["write_count"] += 1
+            elif name == "Grep":
+                counts["grep_count"] += 1
+            elif name.startswith("mcp__"):
+                counts["mcp_count"] += 1
+        if obj.get("type") == "assistant":
+            out_tok = (_message_usage(obj) or {}).get("output_tokens", 0) or 0
+            if out_tok > counts["max_output_tokens"]:
+                counts["max_output_tokens"] = out_tok
+    return counts
+
+
+def update_session_tool_classification(conn, session_id, counts):
+    """Write session-aggregate tool counts to every turn row for this session.
+    Same value repeated on each turn — analyzer.subagent_intelligence() uses
+    MAX() to collapse back to one value per session."""
+    conn.execute(
+        "UPDATE sessions SET "
+        "  tool_call_count=?, bash_count=?, read_count=?, write_count=?, "
+        "  grep_count=?, mcp_count=?, max_output_tokens=? "
+        "WHERE session_id=?",
+        (counts["tool_call_count"], counts["bash_count"], counts["read_count"],
+         counts["write_count"], counts["grep_count"], counts["mcp_count"],
+         counts["max_output_tokens"], session_id),
+    )
+
+
 def scan_lifecycle_events(conn):
     """Iterate every file in scan_state, group messages by sessionId, run
     detect_lifecycle_events. Cheap re-reads are fine — UNIQUE constraint dedups.
@@ -428,6 +478,13 @@ def scan_lifecycle_events(conn):
             if not row or not row["project"]:
                 continue
             total_events += detect_lifecycle_events(msgs, sid, row["project"], conn)
+            # v3.1 — also collect tool classification for this session
+            try:
+                counts = classify_session_tools(msgs)
+                update_session_tool_classification(conn, sid, counts)
+            except Exception as e:
+                print(f"[scanner] tool classification error for {sid[:12]}: {e}",
+                      file=sys.stderr)
         files_done += 1
     conn.commit()
     return total_events, files_done
