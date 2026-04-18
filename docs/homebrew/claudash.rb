@@ -7,15 +7,16 @@
 # Or one-liner:
 #   brew install pnjegan/claudash/claudash
 #
-# MAINTAINER NOTE: after cutting a release tag on GitHub, replace the
-# sha256 PLACEHOLDER below with the tarball hash. Get it with:
-#   curl -sL https://github.com/pnjegan/claudash/archive/refs/tags/v3.3.1.tar.gz | sha256sum
+# MAINTAINER NOTE: when bumping the version, regenerate the sha256 with:
+#   curl -sL https://github.com/pnjegan/claudash/archive/refs/tags/vX.Y.Z.tar.gz | sha256sum
+# GitHub can occasionally regenerate release tarballs; if brew install
+# fails with a sha mismatch, recompute and update this file.
 
 class Claudash < Formula
   desc "Claude Code usage intelligence dashboard — detect waste, generate fixes, measure outcomes"
   homepage "https://github.com/pnjegan/claudash"
   url "https://github.com/pnjegan/claudash/archive/refs/tags/v3.3.1.tar.gz"
-  sha256 "PLACEHOLDER_REPLACE_WITH_REAL_SHA256"
+  sha256 "422c0aecbe8c256d1a53945c2c35d49988f9707e55b1cbc52db8cee411e40e79"
   license "MIT"
 
   depends_on "python@3.11"

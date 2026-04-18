@@ -371,6 +371,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             accounts = get_accounts_config(conn)
             conn.close()
             self._serve_json({
+                "version": VERSION,
                 "db_size_mb": get_db_size_mb(),
                 "total_records": total,
                 "last_scan": get_last_scan_time(),
@@ -1204,6 +1205,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             with open(filepath, "r") as f:
                 content = f.read()
+            # Tiny placeholder substitution — no full template engine needed,
+            # just keeps the version header in sync with package.json.
+            content = content.replace("{{ VERSION }}", VERSION)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
