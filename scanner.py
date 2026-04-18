@@ -731,12 +731,35 @@ def discover_claude_paths():
             os.path.join(home, ".claude", "projects"),
             os.path.join(home, "Library", "Application Support", "Claude", "projects"),
         ]
-    else:  # Linux
+    else:  # Linux (incl. WSL2)
         candidates = [
             os.path.join(home, ".claude", "projects"),
             os.path.join(home, ".config", "claude", "projects"),
             os.path.join(home, ".local", "share", "claude", "projects"),
         ]
+        # WSL2: also surface Windows-side Claude data under /mnt/c/Users/.
+        # Detect WSL via /proc/version (contains 'microsoft' or 'WSL'),
+        # then scan every /mnt/c/Users/*/AppData/Roaming/Claude/projects.
+        is_wsl = False
+        try:
+            with open("/proc/version", "r") as f:
+                ver = f.read().lower()
+                is_wsl = ("microsoft" in ver) or ("wsl" in ver)
+        except Exception:
+            pass
+        if is_wsl and os.path.isdir("/mnt/c/Users"):
+            try:
+                for uname in os.listdir("/mnt/c/Users"):
+                    if uname in ("Public", "Default", "Default User", "All Users"):
+                        continue
+                    candidates.append(
+                        f"/mnt/c/Users/{uname}/AppData/Roaming/Claude/projects"
+                    )
+                    candidates.append(
+                        f"/mnt/c/Users/{uname}/AppData/Local/Claude/projects"
+                    )
+            except OSError:
+                pass
 
     found = set()
     for c in candidates:

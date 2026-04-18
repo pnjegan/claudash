@@ -1,391 +1,262 @@
 # Claudash
 
-Personal Claude usage dashboard. Tracks token consumption, cost, cache ROI,
-5-hour window burn, per-project attribution, sub-agent cost, waste patterns,
-and claude.ai browser usage — for Max, Pro, and API plans.
+**Claude Code usage intelligence dashboard.**
+Reads your local session files, detects waste patterns, generates fixes,
+and measures whether they worked.
 
-Zero pip dependencies. Single SQLite file. Single HTML page.
+![Dashboard screenshot](docs/screenshots/dashboard.png)
 
-![license](https://img.shields.io/badge/license-MIT-black)
-![python](https://img.shields.io/badge/python-3.8%2B-black)
-![deps](https://img.shields.io/badge/dependencies-zero-black)
+---
 
-![Claudash Dashboard](screenshots/Claudash_V2.0.4.png)
-*Claudash v2.0.6 — efficiency score, window usage, API equivalent cost, cache hit rate*
+## What it does
 
-## What you get
+Most Claude Code usage tools tell you how many tokens you spent.
+Claudash tells you *why* and *what to do about it*.
 
-- **Efficiency Score** — single 0-100 score across 5 dimensions: cache, model right-sizing, window discipline, floundering rate, compaction. Honest, actionable, comparable over time.
-- **Subscription ROI math** — see your API-equivalent cost vs. what you pay Anthropic
-- **Per-project attribution** — cost, sessions, cache hit rate, model efficiency, week-over-week change
-- **5-hour window intelligence** — burn rate, predicted exhaust, safe-to-start check, best autonomous-run hour
-- **Sub-agent cost tracking** — see how much your agentic orchestration costs
-- **Waste-pattern detection** — floundering loops, repeated reads, cost outliers, context rot
-- **Daily budget alerts** — configurable per-account cost ceiling with warning and exceeded insights
-- **claude.ai browser tracking** — unified view across Claude Code + web chat (combined window burn)
-- **MCP server** — expose Claudash data to Claude Code itself via Model Context Protocol
-- **Insights engine** — 16 insight types that fire actionable notifications (cache spikes, compaction gaps, window risk, ROI milestones, bad compacts, budget warnings, etc.)
+It detects four waste patterns in your sessions — repeated file reads,
+stuck retry loops, sessions that ran too long without compacting,
+and cost outliers — then generates targeted CLAUDE.md rules to fix them
+and measures the before/after difference.
 
-## Platform Support
+---
 
-| Platform | Core Dashboard | Browser Tracking | Notes |
-|---|---|---|---|
-| macOS + Claude Code | Full | via mac-sync.py or oauth_sync.py | Best experience |
-| Linux + Claude Code | Full | via oauth_sync.py | Recommended for VPS |
-| Windows + Claude Code | Core | Not supported | Path auto-detection added |
-| EC2/VPS | Full | Headless | Use SSH tunnel to view |
-| claude.ai browser only | Partial | Window tracking only | No project intelligence |
+## Prerequisites
 
-## Running Claudash across multiple machines
+Before installing Claudash, you need:
 
-If you use Claude Code on multiple machines (Mac + VPS, work + personal),
-run ONE Claudash instance and point it at all your data.
+| Requirement | Why | How to check |
+|---|---|---|
+| Claude Code | Claudash reads its session files | `claude --version` |
+| Python 3.8+ | Claudash is written in Python | `python3 --version` |
+| Node.js 16+ | Required for npx install method only | `node --version` |
 
-Recommended: run Claudash on your primary machine or VPS.
-To include Claude Code sessions from other machines, sync their JSONL files:
+**Claude Code must have run at least one session** before Claudash
+will show any data. Sessions are stored in:
+- **macOS / Linux**: `~/.claude/projects/`
+- **Windows**: `%APPDATA%\Claude\projects\`
+- **WSL2**: `/mnt/c/Users/<username>/AppData/Roaming/Claude/projects/`
 
-```cron
-# On secondary machine (Mac/Windows), add to crontab:
-*/5 * * * * rsync -az ~/.claude/projects/ user@your-server:~/.claude/projects-secondary/
+---
+
+## Install
+
+Choose the method that works for your setup:
+
+### Method 1 — npx (fastest, no install needed)
+```bash
+npx @jeganwrites/claudash
 ```
+Requires Node.js 16+. Downloads and runs without permanent installation.
 
-Then add the synced path as a second account in the Accounts tab.
-
-Do **NOT** run separate Claudash instances per machine — you will get split
-dashboards with no unified view.
-
-## Getting Started
-
-### Requirements
-- Python 3.8+
-- Claude Code installed and at least one session run
-- macOS or Linux (Windows: core features work, browser tracking not supported)
-
-### Via npm (recommended)
-
+### Method 2 — npm global install
 ```bash
 npm install -g @jeganwrites/claudash
-claudash
+claudash dashboard
 ```
+Installs permanently. Run `claudash` from anywhere.
 
-Requires Node.js 16+ and Python 3.8+.
-Auto-installs, opens browser, detects your Claude Code data.
-
-### Or git clone
-
+### Method 3 — Homebrew (macOS / Linux)
 ```bash
-git clone https://github.com/pnjegan/claudash
+brew tap pnjegan/claudash
+brew install claudash
+claudash dashboard
+```
+No Node.js required. Python only.
+
+### Method 4 — Git clone (full control)
+```bash
+git clone https://github.com/pnjegan/claudash.git
 cd claudash
 python3 cli.py dashboard
-# Browser opens at http://localhost:8080
+```
+No npm, no Node.js required. Best for development or customisation.
+
+---
+
+## Windows users
+
+Claudash runs on Windows via **WSL2** (Windows Subsystem for Linux).
+Native Windows support is in progress.
+
+**Setup WSL2:**
+```bash
+# In PowerShell (as administrator)
+wsl --install
+
+# Restart, then open Ubuntu from Start menu
+# Install Node.js inside WSL
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install Claudash
+npx @jeganwrites/claudash
 ```
 
-### Quick start (VPS/EC2)
+Claudash will automatically detect your Windows Claude Code sessions
+at `/mnt/c/Users/<username>/AppData/Roaming/Claude/projects/`.
+
+---
+
+## macOS users
+
+**Quickest path:**
+```bash
+# Install Node.js if you don't have it
+brew install node
+
+# Run Claudash
+npx @jeganwrites/claudash
+```
+
+Or use Homebrew install (no Node.js needed):
+```bash
+brew tap pnjegan/claudash
+brew install claudash
+claudash dashboard
+```
+
+---
+
+## Linux users
 
 ```bash
-# On your server:
-git clone https://github.com/pnjegan/claudash
-cd claudash
-nohup python3 cli.py dashboard > claudash.log 2>&1 &
+# Ubuntu / Debian — install Node.js
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
 
-# On your local machine:
-ssh -L 8080:localhost:8080 your-server
-# Open: http://localhost:8080
+# Run
+npx @jeganwrites/claudash
 ```
 
-### First run
+---
 
-Claudash auto-detects `~/.claude/projects/` on startup.
-If it finds JSONL files, data appears immediately.
-If not, check that Claude Code has been used at least once.
-
-### Browser window tracking (optional)
+## First run
 
 ```bash
-# Claude Code users (any OS) — recommended:
-python3 tools/oauth_sync.py
+# 1. Start the dashboard (auto-opens browser)
+claudash dashboard
 
-# macOS browser-only users:
-python3 tools/mac-sync.py
+# 2. If no data appears, run the scanner manually
+claudash scan
 
-# Automate via cron:
-# */5 * * * * python3 /path/to/oauth_sync.py
+# 3. Check what's in your session files
+claudash stats
 ```
 
-### Auto-sync daemon (runs every 5 minutes)
+Dashboard opens at **http://localhost:8080**
+
+If the port is in use:
+```bash
+PORT=9090 claudash dashboard
+```
+
+---
+
+## What you'll see
+
+After your first scan:
+
+- **Summary bar** — total sessions, total cost, cache hit rate
+- **Project breakdown** — which projects cost the most
+- **Efficiency score** — 0-100 grade across 5 dimensions
+- **Active insights** — specific problems with fix suggestions
+- **Waste events** — detected patterns with token cost
+- **Fix tracker** — before/after measurement for applied fixes
+
+A score below 50 is not unusual. The score measures how efficiently
+you're using your context window, not whether the work was good.
+
+---
+
+## Backup and recovery
 
 ```bash
-python3 cli.py sync-daemon
-# Or run in background:
-nohup python3 cli.py sync-daemon > /tmp/claudash-sync.log 2>&1 &
-```
+# Manual backup (creates snapshot + JSON export)
+claudash backup
 
-Full setup walkthrough in [SETUP.md](SETUP.md).
+# Restore from backup
+claudash restore --file ~/.claudash/backups/claudash-20260418.db
 
-## Keeping it running
-
-Claudash uses a built-in auto-restart loop with a PID lock at `/tmp/claudash.pid` to prevent duplicate processes. No external process manager required (as of v3.1).
-
-### Start
-
-```bash
-nohup python3 cli.py dashboard --no-browser --skip-init > logs/server.log 2>&1 &
-```
-
-The PID lock enforces singleton semantics — a second `cli.py dashboard` invocation will exit 1 with `Claudash already running (pid N)`.
-
-### Check if running
-
-```bash
-curl http://localhost:8080/api/health -H "X-Dashboard-Key: $(python3 cli.py keys | grep dashboard_key | awk '{print $NF}')"
-```
-
-### View logs
-
-```bash
-tail -f logs/server.log
-```
-
-### Stop
-
-```bash
-kill $(cat /tmp/claudash.pid)
-```
-
-SIGTERM triggers atexit cleanup, so the pidfile is removed automatically (v3.3).
-
-### Reboot survival
-
-Use a small systemd unit or crontab `@reboot` entry:
-
-```
-@reboot cd /path/to/claudash && nohup python3 cli.py dashboard --no-browser --skip-init > logs/server.log 2>&1 &
-```
-
-## Two sync methods for claude.ai browser data
-
-Claudash supports two ways to push your claude.ai session usage to the server.
-Pick one based on how you use Claude.
-
-- **`tools/oauth_sync.py`** — **recommended for Claude Code users**. Reuses the
-  OAuth access token that `claude` already stores in `~/.claude/.credentials.json`.
-  No cookies, no keychain, works on Linux / macOS / Windows. Run via cron.
-
-- **`tools/mac-sync.py`** — for **claude.ai browser-only** users (no Claude Code
-  install). Extracts the `sessionKey` cookie from Chrome / Vivaldi via the macOS
-  keychain. macOS only.
-
-Both scripts POST to the same `/api/claude-ai/sync` endpoint gated by the
-`sync_token` from `python3 cli.py keys`.
-
-## Account configuration
-
-`config.py` sets the initial account configuration on first run.
-After first run, accounts are managed in the dashboard UI (Accounts page).
-Changes to `config.py` after first run have no effect — use the Accounts
-page to modify accounts.
-
-## Commands
-
-| Command | Description |
-|---|---|
-| `python3 cli.py dashboard` | Start the server on :8080 (127.0.0.1) |
-| `python3 cli.py scan` | Incremental scan of all tracked JSONL files + waste detection |
-| `python3 cli.py scan --reprocess` | Re-tag every existing session using the current `PROJECT_MAP` |
-| `python3 cli.py show-other` | List source paths of sessions tagged `Other` |
-| `python3 cli.py stats` | Per-account stats table (CLI) |
-| `python3 cli.py insights` | Print active insights |
-| `python3 cli.py window` | Show 5-hour window status per account |
-| `python3 cli.py export` | Export last 30 days of sessions to `usage_export.csv` |
-| `python3 cli.py waste` | Run waste-pattern detection and print a summary |
-| `python3 cli.py mcp` | Print the MCP settings.json snippet + smoke-test the server |
-| `python3 cli.py keys` | Print `dashboard_key` and `sync_token` (sensitive) |
-| `python3 cli.py claude-ai` | Show claude.ai browser tracking status |
-| `python3 cli.py sync-daemon` | Auto-sync browser data every 5 min (foreground) |
-| `python3 cli.py backup` | Hot-copy DB + JSON fixes export to `~/.claudash/backups/` |
-| `python3 cli.py restore --file PATH` | Restore DB from a backup, restart dashboard |
-
-## Backup and Recovery
-
-Claudash stores data in `data/usage.db`. Back it up regularly:
-
-```bash
-python3 cli.py backup
-```
-
-This creates `~/.claudash/backups/claudash-YYYYMMDD_HH.db` (via sqlite3's hot-backup API — safe while the dashboard is running) plus a JSON sidecar containing the `fixes` and `fix_measurements` tables. Retention is automatic: the 24 most-recent hourly backups plus one per calendar day for the last 7 days.
-
-Flags:
-- `--output DIR` — write somewhere other than `~/.claudash/backups/`
-- `--quiet` — suppress stdout (exit code still signals success/failure)
-
-For automated hourly backups, add to crontab:
-
-```
+# Automated hourly backup (add to crontab)
 0 * * * * cd /path/to/claudash && python3 cli.py backup --quiet
 ```
 
-To restore from a backup:
+Your irreplaceable data is in the `fixes` and `fix_measurements` tables.
+Everything else regenerates from your session files.
 
+---
+
+## Privacy and data handling
+
+Claudash reads your Claude Code session files stored locally on your machine.
+
+- **Nothing is uploaded** — all data stays in `data/usage.db` on your machine
+- **No telemetry** — no usage tracking, no analytics, no external calls
+- **No accounts** — no login, no email, no cloud sync
+- **Session files contain your full conversation history** — Claudash reads them to extract token counts and tool calls only, not conversation content
+
+The database is created with restricted file permissions (0600 on Unix systems).
+API keys for fix generation are stored locally in the same database.
+
+For team or cloud deployment, see [SECURITY.md](SECURITY.md).
+
+---
+
+## Troubleshooting
+
+**Dashboard shows no data**
+- Run `claudash scan` first
+- Check that `~/.claude/projects/` contains `.jsonl` files
+- On Windows, run inside WSL2
+
+**Port 8080 already in use**
 ```bash
-python3 cli.py restore --file ~/.claudash/backups/claudash-20260418_04.db
+PORT=9090 claudash dashboard
 ```
 
-`restore` stops the running dashboard (via the PID lock at `/tmp/claudash.pid`), takes a defensive copy of the current DB to `data/usage.db.pre-restore.<timestamp>`, swaps in the backup, runs `PRAGMA integrity_check`, prints row counts, and restarts the dashboard.
-
-For offsite backup, sync `~/.claudash/backups/` to any cloud storage. Your irreplaceable data is in `fixes` and `fix_measurements` — everything else regenerates from your `~/.claude/projects/` JSONL files on the next `scan`.
-
-## How Claudash differs from similar tools
-
-Claudash is not a clone of any existing tool. It focuses on the parts other
-trackers skip: persistence, per-project attribution, and the intelligence
-layer that turns raw numbers into action.
-
-| Feature | Claudash | ccusage | claude-usage | claude-monitor |
-|---|---|---|---|---|
-| Web dashboard | ✓ | ✗ | ✓ | ✗ |
-| Per-project attribution | ✓ | partial | ✗ | ✗ |
-| claude.ai browser tracking | ✓ | ✗ | ✗ | ✗ |
-| Subscription ROI math | ✓ | ✗ | ✗ | ✗ |
-| Account manager UI | ✓ | ✗ | ✗ | ✗ |
-| Sub-agent cost tracking | ✓ | ✗ | ✗ | ✗ |
-| MCP server | ✓ | ✓ | ✗ | ✗ |
-| Waste pattern detection | ✓ | ✗ | ✗ | ✗ |
-| Multi-machine collector | ✓ | ✗ | ✗ | ✗ |
-| Zero pip dependencies | ✓ | ✗ | ✓ | ✗ |
-
-We recommend using `ccusage` alongside Claudash — `ccusage` for quick terminal
-reports, Claudash for deep project intelligence, persistence, and actionable
-insights.
-
-## Insight rules
-
-16 insight types fire after every scan (14 rule sections; `bad_compact_detected` is v2-F3, `budget_warning` and `budget_exceeded` are two severities of the same rule):
-
-| Type | Severity | When it triggers |
-|---|---|---|
-| `model_waste` | amber | Project uses Opus but avg output <800 tokens — Sonnet is sufficient |
-| `cache_spike` | red | Cache creation >3× the 7-day average |
-| `compaction_gap` | amber | Sessions hit 70% of window limit without `/compact` |
-| `cost_target` | green | Project hit its cost-per-session target |
-| `window_risk` | red | Current burn rate will exhaust the 5-hour window in <60 min |
-| `roi_milestone` | green | Subscription ROI crossed 2×, 5×, or 10× this month |
-| `heavy_day` | blue | Consistent heavy usage on same day of week |
-| `best_window` | blue | Identifies quietest 5-hour block for autonomous runs |
-| `window_combined_risk` | red | Claude Code + claude.ai browser combined >80% of window |
-| `session_expiry` | red | claude.ai session cookie expired |
-| `pro_messages_low` | amber | Pro plan at >70% of message budget |
-| `subagent_cost_spike` | amber | Sub-agents consume >30% of project cost |
-| `floundering_detected` | red/amber | 4+ identical `(tool, input_hash)` calls within any 50-call window in a session |
-| `bad_compact_detected` | red | `/compact` at >60% context followed by messages that reference summarised-away content (v2-F3) |
-| `budget_warning` | amber | Daily budget at 80% |
-| `budget_exceeded` | red | Daily budget exceeded |
-
-## Fix Tracker
-
-Claudash tracks whether the fixes you make to your workflow actually work.
-
-1. **Baseline** — Claudash detects a waste pattern (e.g. floundering in Tidify costs $3,502/month)
-2. **Apply** — You make a change (add max-retry rule to CLAUDE.md, set autoCompactThreshold)
-3. **Measure** — Run `python3 cli.py measure <fix-id>` after 7 days
-4. **Verdict** — Claudash shows before/after: sessions, cost, floundering rate, cache hit
-
+**Python not found**
 ```bash
-# Add a fix
-python3 cli.py fix add "Added max-retry:3 to CLAUDE.md for Tidify"
+# macOS
+brew install python@3.11
 
-# Measure it after a week
-python3 cli.py measure <fix-id>
+# Ubuntu
+sudo apt install python3
 ```
 
-No other Claude Code tracker closes this loop. Most tools tell you what happened. Fix Tracker tells you whether your fix worked.
+**Node.js version too old**
+Claudash requires Node.js 16+. Check with `node --version`.
+Update via `brew upgrade node` (macOS) or via nvm.
 
-## Fix Generator
-
-Claudash uses Claude to fix Claude Code waste. It generates a targeted
-CLAUDE.md rule for any waste pattern it detects — all three supported
-providers run Anthropic models only.
-
+**Permission denied on database**
 ```bash
-python3 cli.py keys --set-provider          # one-time provider setup
-python3 cli.py fix generate <waste_event_id>  # print a proposed rule, save as 'proposed'
+chmod 600 data/usage.db
 ```
 
-Supported providers (Anthropic models only):
+**WSL2 can't find Windows sessions**
+Claudash looks for sessions in `/mnt/c/Users/<username>/AppData/Roaming/Claude/projects/`.
+Confirm that path exists: `ls /mnt/c/Users/` and find your username.
 
-- **Anthropic API (direct)** — `claude-sonnet-4-5`. Default. Stdlib-only.
-- **AWS Bedrock (Anthropic)** — `anthropic.claude-sonnet-4-20250514-v1:0`.
-  For teams with existing AWS spend / HIPAA requirements. Needs
-  `boto3` (optional `pip install boto3`).
-- **OpenRouter (Anthropic)** — `anthropic/claude-sonnet-4-5` via
-  OpenRouter. For users who want to use free credits first. Stdlib-only.
+---
 
-### Cost transparency
+## Contributing
 
-Fix generation requires an LLM call (~1,100 tokens per fix on Sonnet).
-Estimated costs:
+Pull requests welcome. Especially:
+- Windows native support (without WSL2)
+- Firefox session key support for browser tracking
+- Additional waste pattern detectors
 
-- **Anthropic direct**: ~$0.006 per fix
-- **AWS Bedrock (Anthropic)**: ~$0.007 per fix — varies by region,
-  check your [Bedrock console](https://console.aws.amazon.com/bedrock)
-- **OpenRouter (Anthropic)**: ~$0.008 per fix
+```bash
+git clone https://github.com/pnjegan/claudash.git
+cd claudash
+python3 cli.py dashboard  # no install needed
+```
 
-You control when fixes are generated — nothing calls the API
-automatically. Every generation is triggered by you explicitly via
-`claudash fix generate <id>`. Claudash itself (scanner, dashboard,
-waste detection) has zero LLM costs and zero external API calls.
-
-## API endpoints
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/api/data?account=X` | — | Full analysis (metrics, projects, windows, insights, sub-agents, waste, budget) |
-| GET | `/api/projects?account=X` | — | Per-project breakdown |
-| GET | `/api/insights?account=X&dismissed=0` | — | Active insights |
-| GET | `/api/window?account=X` | — | 5-hour window status + history |
-| GET | `/api/trends?account=X&days=7` | — | Daily snapshots for charts |
-| GET | `/api/health` | — | DB size, total records, last scan |
-| GET | `/api/accounts` | — | Accounts with `data_paths`, projects, budget |
-| GET | `/api/claude-ai/accounts` | — | claude.ai browser tracking config (session keys scrubbed) |
-| POST | `/api/scan` | X-Dashboard-Key | Trigger a rescan |
-| POST | `/api/insights/{id}/dismiss` | X-Dashboard-Key | Dismiss an insight |
-| POST / PUT / DELETE | `/api/accounts*` | X-Dashboard-Key | Account CRUD |
-| POST | `/api/claude-ai/sync` | X-Sync-Token | Push browser / OAuth usage from a collector |
-
-GET endpoints are unauthenticated because the server only binds `127.0.0.1`.
-Every mutating endpoint requires `X-Dashboard-Key` (from `python3 cli.py keys`).
-
-## Tech stack
-
-- Python 3.8+ stdlib only — zero pip dependencies
-- SQLite with WAL mode (`data/usage.db`)
-- Vanilla JS dashboard with DM Serif Display + DM Mono + DM Sans (Google Fonts `@import`)
-- No build step, no bundler, no Node, no Docker
-
-## Documentation
-
-- [SETUP.md](SETUP.md) — first-time setup guide
-- [docs/HOOKS_SETUP.md](docs/HOOKS_SETUP.md) — Claude Code hooks integration
-- [CHANGELOG.md](CHANGELOG.md) — version history
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
-
-## Security
-
-Your data never leaves your machine.
-
-- Dashboard reads JSONL files Claude Code writes to `~/.claude/projects/`
-- All data stored in local SQLite (`data/usage.db`)
-- Dashboard served on localhost only — not accessible from internet
-- mac-sync.py reads browser cookies locally and pushes only your
-  window usage percentage to your dashboard server
-- No telemetry, no analytics, no external API calls
-- No data sent to Anthropic, GitHub, or any third party
-
-The dashboard key is stored in `data/usage.db` (SQLite).
-The DB file has 0600 permissions (owner read/write only).
-If you have filesystem access to the VPS, you have access
-to the key — this is by design for a single-user tool.
+---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — use it, fork it, build on it.
+
+---
+
+*All data stays on your machine. Zero pip dependencies. One command install.*

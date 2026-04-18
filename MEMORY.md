@@ -4,6 +4,13 @@
 
 Full handoff: `.dev-cdc/SESSION_22_HANDOFF.md` (in repo from this commit).
 
+## Pending manual step (Homebrew tap)
+- Create github.com/pnjegan/homebrew-claudash repo (cannot be done from CLI)
+- Copy docs/homebrew/claudash.rb to Formula/claudash.rb in that tap repo
+- Replace sha256 PLACEHOLDER after cutting the v3.3.1 tag:
+    curl -sL https://github.com/pnjegan/claudash/archive/refs/tags/v3.3.1.tar.gz | sha256sum
+- Verify: brew tap pnjegan/claudash && brew install claudash
+
 ## What's live
 - v3.0.0: compliance_events, 4 insight rules, cli.py realstory, /api/realstory
 - v3.0.1: row_factory guard in generate_insights()
