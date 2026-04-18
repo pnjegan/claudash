@@ -117,16 +117,29 @@ def test_i01_server_health():
                f"v{version} uptime={data.get('uptime_seconds',0)}s")
 
 def test_i02_pm2():
-    rc, out, err = run_cli("", cwd="/")
-    result = subprocess.run(
-        ["pm2", "list"], capture_output=True, text=True, timeout=10
-    )
-    if "claudash" not in result.stdout:
-        record("TEST-I-02", "PM2 process", "FAIL", "claudash not in pm2 list")
-    elif "online" in result.stdout:
-        record("TEST-I-02", "PM2 process", "PASS", "claudash online in PM2")
+    """v3.1 — PM2 supervision was deprecated in favor of the PID lock in
+    cmd_dashboard() (fcntl.flock on /tmp/claudash.pid). PM2 is no longer
+    required. This test passes when either the PID lock is active OR PM2
+    manages the process; it fails only when neither supervisor is in place.
+    """
+    pid_lock_ok = os.path.exists("/tmp/claudash.pid")
+    try:
+        result = subprocess.run(
+            ["pm2", "list"], capture_output=True, text=True, timeout=10
+        )
+        pm2_ok = "claudash" in result.stdout and "online" in result.stdout
+    except Exception:
+        pm2_ok = False
+
+    if pid_lock_ok and not pm2_ok:
+        record("TEST-I-02", "Process supervision", "PASS",
+               "PID lock active (PM2 deprecated in v3.1)")
+    elif pm2_ok:
+        record("TEST-I-02", "Process supervision", "PASS",
+               "claudash online in PM2")
     else:
-        record("TEST-I-02", "PM2 process", "WARN", "claudash in PM2 but not online")
+        record("TEST-I-02", "Process supervision", "FAIL",
+               "neither PID lock nor PM2 supervision active")
 
 def test_i03_database_scale():
     db = get_db()
@@ -592,8 +605,9 @@ def test_r02_no_pip_deps():
         "typing", "abc", "io", "copy", "random", "struct", "base64",
         "hmac", "secrets", "uuid", "csv", "argparse", "subprocess",
         "shutil", "glob", "tempfile", "traceback", "inspect", "stat",
-        "platform", "ssl", "fnmatch", "signal", "getpass", "concurrent", "webbrowser", "threading", "typing_extensions", "webbrowser", "typing_extensions",
-        "contextlib"
+        "platform", "ssl", "fnmatch", "signal", "getpass", "concurrent",
+        "webbrowser", "typing_extensions", "contextlib",
+        "fcntl", "atexit",  # v3.1 — PID lock in cli.py
     }
     py_files = [f for f in os.listdir(PROJ_DIR) if f.endswith(".py")]
     non_stdlib = []
@@ -808,6 +822,49 @@ def test_sa_005_schema_has_tool_columns():
         record("TEST-SA-005", "Tool classification schema", "FAIL", str(e))
 
 
+def test_sa_006_turns_per_tool_guard():
+    """v3.2: text-heavy low-tool session must NOT classify as mechanical.
+    Guard: tools > 0 AND turns > 0 AND turns/tools > 10 → mixed."""
+    try:
+        from analyzer import classify_subagent_work
+        # Real-world hallucination case: f5939e9e-310 — 686 turns, 17 tools
+        # Pre-v3.2: classified as 'mechanical' (score=0)
+        # Post-v3.2: should be 'mixed' (turns_per_tool = 40.35 > 10)
+        s = {"write_count": 0, "mcp_count": 0, "max_output_tokens": 500,
+             "tool_call_count": 17, "bash_count": 8, "turns": 686}
+        result = classify_subagent_work(s)
+        if result == "mixed":
+            record("TEST-SA-006", "Turns-per-tool guard (hallucination fix)",
+                   "PASS", f"high-tpt session correctly classified as {result}")
+        else:
+            record("TEST-SA-006", "Turns-per-tool guard (hallucination fix)",
+                   "FAIL", f"expected 'mixed', got '{result}' — "
+                   f"hallucination regression")
+    except Exception as e:
+        record("TEST-SA-006", "Turns-per-tool guard (hallucination fix)",
+               "FAIL", str(e))
+
+
+def test_sa_007_schema_has_prompt_quality():
+    """v3.2: sessions.prompt_quality column exists."""
+    try:
+        import db
+        conn = db.get_conn()
+        try:
+            cols = [r[1] for r in conn.execute(
+                "PRAGMA table_info(sessions)").fetchall()]
+        finally:
+            conn.close()
+        if "prompt_quality" in cols:
+            record("TEST-SA-007", "prompt_quality column", "PASS",
+                   "column present")
+        else:
+            record("TEST-SA-007", "prompt_quality column", "FAIL",
+                   "prompt_quality missing from sessions")
+    except Exception as e:
+        record("TEST-SA-007", "prompt_quality column", "FAIL", str(e))
+
+
 # ── TEST REGISTRY ──────────────────────────────────────────────────────────────
 
 ALL_TESTS = {
@@ -849,13 +906,17 @@ ALL_TESTS = {
         ("TEST-SA-004", "subagent_intelligence structure", test_sa_004_intelligence_structure),
         ("TEST-SA-005", "Tool classification schema", test_sa_005_schema_has_tool_columns),
     ],
+    "v3.2": [
+        ("TEST-SA-006", "Turns-per-tool guard", test_sa_006_turns_per_tool_guard),
+        ("TEST-SA-007", "prompt_quality column", test_sa_007_schema_has_prompt_quality),
+    ],
 }
 
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Claudash test runner")
-    parser.add_argument("--section", choices=["infra","v1","v2","v3.1","regression","all"],
+    parser.add_argument("--section", choices=["infra","v1","v2","v3.1","v3.2","regression","all"],
                         default="all")
     parser.add_argument("--test", help="Run single test by ID (e.g. TEST-V2-F1)")
     parser.add_argument("--monitor", action="store_true",

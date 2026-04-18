@@ -653,7 +653,8 @@ def subagent_metrics(conn, account="all"):
 
 def classify_subagent_work(s):
     """Classify a single sub-agent session's work as mechanical / mixed /
-    reasoning. Input is a dict with the session-aggregate tool counts.
+    reasoning. Input is a dict with the session-aggregate tool counts
+    AND a 'turns' key (COUNT(*) of per-turn rows).
 
     Heuristic (additive score):
       write > 0                  → +2  (producing code = reasoning)
@@ -662,15 +663,25 @@ def classify_subagent_work(s):
       tool_call_count >= 40      → +1  (high volume = investigation)
       bash > 15 AND write > 0    → +1  (build-test-iterate)
 
-    score == 0  → mechanical
-    score >= 2  → reasoning
-    else        → mixed
+    v3.2 hallucination fix — turns_per_tool guard on the 'mechanical' label:
+      If score == 0 AND turns_per_tool > 10:
+        the session has lots of conversation between sparse tool calls —
+        that correlates with text-heavy reasoning work, NOT mechanical
+        file-shuffling. Downgrade to 'mixed' rather than confidently
+        saying mechanical.
+      Only return 'mechanical' when score==0 AND the session is
+      actually tool-dense (turns_per_tool <= 10, equivalent to
+      tools/turns >= 0.10). This avoids over-estimating Haiku savings
+      on reasoning-heavy work like audits.
+
+    Returns: 'mechanical' | 'reasoning' | 'mixed'
     """
     write = s.get("write_count") or 0
     mcp = s.get("mcp_count") or 0
     max_out = s.get("max_output_tokens") or 0
     tools = s.get("tool_call_count") or 0
     bash = s.get("bash_count") or 0
+    turns = s.get("turns") or 0
 
     score = 0
     if write > 0:
@@ -684,10 +695,18 @@ def classify_subagent_work(s):
     if bash > 15 and write > 0:
         score += 1
 
-    if score == 0:
-        return "mechanical"
     if score >= 2:
         return "reasoning"
+
+    if score == 0:
+        # Tool density guard — only "mechanical" if session was tool-dense
+        if tools > 0 and turns > 0:
+            turns_per_tool = turns / tools
+            if turns_per_tool > 10:
+                # Lots of conversation between rare tool calls — not mechanical
+                return "mixed"
+        return "mechanical"
+
     return "mixed"
 
 
@@ -712,13 +731,15 @@ def subagent_intelligence(conn, account="all"):
     rows = conn.execute(
         "SELECT session_id, project, "
         "       SUM(cost_usd) AS cost_usd, "
+        "       COUNT(*) AS turns, "
         "       MAX(tool_call_count) AS tool_call_count, "
         "       MAX(bash_count) AS bash_count, "
         "       MAX(read_count) AS read_count, "
         "       MAX(write_count) AS write_count, "
         "       MAX(grep_count) AS grep_count, "
         "       MAX(mcp_count) AS mcp_count, "
-        "       MAX(max_output_tokens) AS max_output_tokens "
+        "       MAX(max_output_tokens) AS max_output_tokens, "
+        "       MAX(prompt_quality) AS prompt_quality "
         "FROM sessions WHERE " + where + " "
         "GROUP BY session_id "
         "ORDER BY cost_usd DESC",
@@ -741,6 +762,10 @@ def subagent_intelligence(conn, account="all"):
 
         p = result[project]
         cost = s["cost_usd"] or 0.0
+        turns = s["turns"] or 0
+        tools = s["tool_call_count"] or 0
+        turns_per_tool = round(turns / tools, 2) if tools > 0 else None
+        cost_per_turn = round(cost / turns, 6) if turns > 0 else 0.0
 
         if classification == "mechanical":
             p["mechanical_count"] += 1
@@ -755,16 +780,27 @@ def subagent_intelligence(conn, account="all"):
         p["top_sessions"].append({
             "session_id": (s["session_id"] or "")[:12],
             "classification": classification,
-            "tool_call_count": s["tool_call_count"] or 0,
+            "tool_call_count": tools,
+            "turns": turns,
+            "turns_per_tool": turns_per_tool,
+            "cost_per_turn": cost_per_turn,
+            "prompt_quality": s["prompt_quality"] or "unknown",
             "cost_usd": round(cost, 4),
         })
 
     for project, p in result.items():
         total = p["mechanical_cost"] + p["reasoning_cost"] + p["mixed_cost"]
         p["total_subagent_cost"] = round(total, 4)
-        # Haiku is ~95% cheaper than Opus on input/output; mechanical work
-        # would run on Haiku with near-identical outcomes.
+        # Haiku is ~95% cheaper than Opus on input/output; the mechanical
+        # classification is a heuristic (not a guarantee). The caveat
+        # field is returned alongside so consumers can render the number
+        # with the appropriate hedging.
         p["haiku_savings_estimate"] = round(p["mechanical_cost"] * 0.95, 4)
+        p["haiku_savings_caveat"] = (
+            "mechanical_cost × 0.95 — verify classification per session "
+            "before switching model; tool-dense mechanical work is safest "
+            "candidate, text-heavy sessions may regress on Haiku"
+        )
         p["top_sessions"] = sorted(
             p["top_sessions"], key=lambda x: x["cost_usd"], reverse=True
         )[:5]
