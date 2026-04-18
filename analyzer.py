@@ -1384,6 +1384,11 @@ def full_analysis(conn, account="all"):
 
     # Sub-agent rollup, daily budget, waste summary
     sub_metrics = subagent_metrics(conn, account)
+    # v3.1 — per-project mechanical vs reasoning classification
+    try:
+        sub_intel = subagent_intelligence(conn, account)
+    except Exception:
+        sub_intel = {}
     budget_metrics = daily_budget_metrics(conn, account)
     try:
         from waste_patterns import waste_summary_by_project
@@ -1428,6 +1433,7 @@ def full_analysis(conn, account="all"):
         "insights_count": len(active_insights),
         "accounts_list": accounts_list,
         "subagent_metrics": sub_metrics,
+        "subagent_intelligence": sub_intel,
         "daily_budget": budget_metrics,
         "waste_summary": waste_summary,
         "lifecycle": lifecycle,
