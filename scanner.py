@@ -440,6 +440,108 @@ def detect_lifecycle_events(messages, session_id, project, conn):
 _WRITE_TOOL_NAMES = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _READ_TOOL_NAMES = {"Read", "cat", "LS"}
 
+# v3.2 — sub-agent prompt quality scoring
+_COST_AMPLIFIERS = {
+    "very thorough", "exhaustive", "thorough", "entire codebase",
+    "all files", "every finding", "comprehensive", "complete audit",
+    "everything", "all instances", "do not miss",
+}
+_CONSTRAINTS = {
+    "only these files", "stop after", "limit to", "focus on",
+    "maximum", "top 10", "top 5", "at most", "no more than",
+    "within scope", "only check", "skip", "exclude", "ignore",
+}
+
+
+def extract_subagent_prompt(source_path):
+    """Read the first user-message text from a sub-agent JSONL file.
+
+    Returns the prompt string, or None if:
+      - path is missing / unreadable
+      - no user message exists in the file
+      - the user message has no text content
+
+    Never raises — any error becomes None.
+    """
+    if not source_path or not os.path.exists(source_path):
+        return None
+    try:
+        with open(source_path, "r", errors="replace") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line.strip())
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                if obj.get("type") != "user":
+                    continue
+                content = obj.get("message", {}).get("content", "")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text.strip():
+                                return text
+    except Exception:
+        return None
+    return None
+
+
+def score_prompt_quality(prompt_text):
+    """Score a sub-agent task prompt for cost risk.
+
+    Returns dict with verdict + evidence:
+      score: 'scoped' | 'balanced' | 'unbounded' | 'unknown'
+      amplifiers_found: list[str]    (exact phrases matched)
+      constraints_found: list[str]
+      amplifier_count, constraint_count: int
+      raw_text_sample: first 200 chars
+
+    'unknown' = prompt empty/missing — never returns a confident score
+    without evidence.
+    """
+    if not prompt_text or len(prompt_text.strip()) < 10:
+        return {
+            "score": "unknown",
+            "amplifiers_found": [],
+            "constraints_found": [],
+            "amplifier_count": 0,
+            "constraint_count": 0,
+            "raw_text_sample": "",
+        }
+
+    text_lower = prompt_text.lower()
+    amps = sorted(a for a in _COST_AMPLIFIERS if a in text_lower)
+    cons = sorted(c for c in _CONSTRAINTS if c in text_lower)
+
+    if len(amps) == 0:
+        score = "scoped"
+    elif len(cons) >= len(amps):
+        score = "balanced"
+    else:
+        score = "unbounded"
+
+    return {
+        "score": score,
+        "amplifiers_found": amps,
+        "constraints_found": cons,
+        "amplifier_count": len(amps),
+        "constraint_count": len(cons),
+        "raw_text_sample": prompt_text[:200],
+    }
+
+
+def compute_prompt_quality_for_session(source_path, is_subagent):
+    """Return 'scoped'|'balanced'|'unbounded'|'unknown' or None for
+    non-sub-agent sessions. Used by both the scanner and the backfill."""
+    if not is_subagent:
+        return None
+    prompt = extract_subagent_prompt(source_path)
+    if not prompt:
+        return "unknown"
+    return score_prompt_quality(prompt)["score"]
+
 
 def classify_session_tools(messages):
     """Walk one session's messages, return session-aggregate tool counts.
@@ -519,6 +621,24 @@ def scan_lifecycle_events(conn):
                 update_session_tool_classification(conn, sid, counts)
             except Exception as e:
                 print(f"[scanner] tool classification error for {sid[:12]}: {e}",
+                      file=sys.stderr)
+            # v3.2 — sub-agent prompt quality (only for sub-agent sessions)
+            try:
+                is_sa_row = conn.execute(
+                    "SELECT is_subagent, source_path FROM sessions "
+                    "WHERE session_id=? LIMIT 1", (sid,)
+                ).fetchone()
+                if is_sa_row and is_sa_row["is_subagent"]:
+                    pq = compute_prompt_quality_for_session(
+                        is_sa_row["source_path"], True
+                    )
+                    if pq is not None:
+                        conn.execute(
+                            "UPDATE sessions SET prompt_quality=? "
+                            "WHERE session_id=?", (pq, sid)
+                        )
+            except Exception as e:
+                print(f"[scanner] prompt quality error for {sid[:12]}: {e}",
                       file=sys.stderr)
         files_done += 1
     conn.commit()

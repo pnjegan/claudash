@@ -562,6 +562,60 @@ def generate_insights(conn=None):
     except Exception:
         pass
 
+    # ── 21. UNBOUNDED_SUBAGENT_PROMPT (v3.2) ──
+    # Fires for sub-agent sessions where:
+    #   1. prompt_quality='unbounded' (cost amplifiers w/ no constraints)
+    #   2. session cost > project sub-agent avg
+    # Evidence: exact amplifier phrases and cost ratio stored in detail_json.
+    # Debounce: per-session (168h) since the prompt is immutable.
+    try:
+        from scanner import extract_subagent_prompt, score_prompt_quality
+        rows = conn.execute(
+            "WITH sa_costs AS ("
+            "  SELECT session_id, project, account, SUM(cost_usd) AS cost, "
+            "         MAX(prompt_quality) AS pq, MAX(source_path) AS source_path "
+            "  FROM sessions WHERE is_subagent=1 "
+            "    AND timestamp > ? "
+            "  GROUP BY session_id"
+            "), project_avg AS ("
+            "  SELECT project, AVG(cost) AS avg_cost FROM sa_costs GROUP BY project"
+            ") "
+            "SELECT s.session_id, s.project, s.account, s.cost, s.source_path, "
+            "       p.avg_cost "
+            "FROM sa_costs s JOIN project_avg p ON s.project = p.project "
+            "WHERE s.pq='unbounded' AND s.cost > p.avg_cost "
+            "ORDER BY s.cost DESC LIMIT 10",
+            (_days_ago(30),),
+        ).fetchall()
+        for r in rows:
+            sid = r["session_id"]
+            sid_short = sid[:12]
+            key = f"{r['project']}_{sid_short}"
+            if _insight_exists_recent(conn, "unbounded_subagent_prompt",
+                                      key, hours=168):
+                continue
+            # Re-extract prompt for evidence — show actual phrases, not a claim
+            prompt = extract_subagent_prompt(r["source_path"])
+            quality = score_prompt_quality(prompt) if prompt else {}
+            amps = quality.get("amplifiers_found", [])
+            ratio = r["cost"] / (r["avg_cost"] or 1)
+            msg = (f"{r['project']}: sub-agent {sid_short} used unbounded scope "
+                   f"phrasing ({amps}) and cost ${r['cost']:.2f} "
+                   f"({ratio:.1f}× project avg). If cost is surprising, "
+                   f"consider adding a file list or stop condition.")
+            detail = json.dumps({
+                "session_id": sid,
+                "cost_usd": round(r["cost"], 2),
+                "ratio_vs_avg": round(ratio, 2),
+                "amplifiers": amps,
+                "constraints": quality.get("constraints_found", []),
+            })
+            insert_insight(conn, r["account"] or "all", key,
+                           "unbounded_subagent_prompt", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
     conn.commit()
     if should_close:
         conn.close()

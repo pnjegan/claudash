@@ -113,6 +113,8 @@ def init_db():
         ("mcp_count", "INTEGER DEFAULT 0"),
         ("max_output_tokens", "INTEGER DEFAULT 0"),
         ("work_classification", "TEXT"),
+        # v3.2 — sub-agent prompt quality (scoped/balanced/unbounded/unknown)
+        ("prompt_quality", "TEXT"),
     ]:
         if not _column_exists(conn, "sessions", col):
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
