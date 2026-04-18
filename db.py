@@ -840,6 +840,113 @@ def get_waste_events_by_project(conn, days=7):
     return [dict(r) for r in rows]
 
 
+def detect_subagent_file_redundancy(conn, project=None, days=30):
+    """Find files read by multiple sub-agents under the same parent session.
+
+    Returns a list of verified redundancy cases only — no inference, no
+    extrapolation. Each element:
+        {
+          parent_session_id: str,
+          project: str,
+          redundant_file: str,        # basename only
+          subagent_count: int,        # sub-agents that read it
+          total_reads: int,           # summed across those sub-agents
+          evidence_session_ids: list  # proof source session_ids
+        }
+
+    CURRENT DATA LIMITATION (documented, not hidden):
+      Sub-agent JSONL files write the parent's UUID into their own
+      sessionId field (see scanner._parse_subagent_info docstring).
+      Consequently waste_events keyed by session_id collapse all sub-
+      agents under one parent into a single row-set — we cannot tell
+      which sub-agent triggered which waste event.
+
+      Until session_id is switched to the agent-<hash> identifier
+      (deferred design per MEMORY.md), this function typically returns
+      an empty list even when disk has multiple sub-agent JSONLs under
+      the same parent. The function is correct; the data shape limits
+      what it can prove.
+
+      Verified today: 0 cases. See `.dev-cdc/BUG_HUNT_V3_20260418.md`
+      and the v3.2 pre-flight audit for the full reasoning.
+    """
+    import json as _json
+    since = int(time.time()) - (days * 86400)
+
+    # Step 1: distinct (session_id, source_path) pairs for sub-agents,
+    # grouped by parent_session_id. Filter by project if requested.
+    sql = (
+        "SELECT DISTINCT session_id, parent_session_id, project, source_path "
+        "FROM sessions "
+        "WHERE is_subagent=1 "
+        "  AND parent_session_id IS NOT NULL "
+        "  AND timestamp > ? "
+    )
+    params = [since]
+    if project:
+        sql += " AND project = ? "
+        params.append(project)
+
+    sa_rows = conn.execute(sql, params).fetchall()
+    if not sa_rows:
+        return []
+
+    # Step 2: for each distinct sub-agent session_id, extract file reads
+    # from waste_events.detail_json. One detail_json per
+    # (session_id, pattern_type='repeated_reads') — union into a set.
+    session_files = {}  # session_id -> {'files': {fname: reads}, 'parent': str, 'project': str}
+    for r in sa_rows:
+        waste = conn.execute(
+            "SELECT detail_json FROM waste_events "
+            "WHERE session_id=? AND pattern_type='repeated_reads'",
+            (r["session_id"],),
+        ).fetchall()
+        files = {}
+        for w in waste:
+            if not w["detail_json"]:
+                continue
+            try:
+                detail = _json.loads(w["detail_json"])
+            except (ValueError, TypeError):
+                continue
+            for f in detail.get("files", []):
+                fname = (f.get("path") or "").split("/")[-1]
+                if not fname:
+                    continue
+                files[fname] = files.get(fname, 0) + (f.get("reads") or 1)
+        if files:
+            session_files[r["session_id"]] = {
+                "files": files,
+                "parent": r["parent_session_id"],
+                "project": r["project"],
+            }
+
+    # Step 3: group by parent; find files present in 2+ sub-agents
+    parent_groups = {}
+    for sid, data in session_files.items():
+        parent_groups.setdefault(data["parent"], []).append((sid, data))
+
+    results = []
+    for parent, children in parent_groups.items():
+        if len(children) < 2:
+            continue
+        file_presence = {}  # fname -> [(session_id, reads), ...]
+        for sid, data in children:
+            for fname, reads in data["files"].items():
+                file_presence.setdefault(fname, []).append((sid, reads))
+        for fname, appearances in file_presence.items():
+            if len(appearances) >= 2:
+                results.append({
+                    "parent_session_id": parent,
+                    "project": children[0][1]["project"],
+                    "redundant_file": fname,
+                    "subagent_count": len(appearances),
+                    "total_reads": sum(r for _, r in appearances),
+                    "evidence_session_ids": [s for s, _ in appearances],
+                })
+    return results
+
+
 def get_lifecycle_events(conn, project=None, days=30):
     since = int(time.time()) - (days * 86400)
     sql = ("SELECT session_id, project, event_type, timestamp, "
