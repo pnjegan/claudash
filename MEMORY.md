@@ -33,6 +33,12 @@
 - cron watchdog pgrep probe fires before port bind — 
   PID lock is second defensive layer but watchdog logic 
   itself could be tightened
+- Sub-agent session_id == parent_session_id by Claude Code JSONL design 
+  (not a bug). 147 sub-agent JSONL files on disk collapse to ~35 DB 
+  rows because all sub-agents under one parent share the same sessionId 
+  in their JSONL content. True per-sub-agent tracking requires using 
+  agent-<hash> from filename as session_id — deferred design.
+  See scanner.py _parse_subagent_info() docstring for details.
 
 ## Next session priorities
 1. Let compliance_events accumulate 2+ weeks of real data

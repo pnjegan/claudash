@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 import threading
@@ -175,18 +176,52 @@ def _set_scan_state(conn, filepath, offset, lines_processed):
     )
 
 
-def _parse_subagent_info(filepath):
-    """If the file lives under a `/subagents/` directory, return
-    (is_subagent=1, parent_session_id), else (0, None).
+_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
-    Expected shape: .../<parent_session_uuid>/subagents/agent-*.jsonl
-    The parent's session UUID is the folder immediately above `subagents`.
+
+def _parse_subagent_info(filepath):
+    """Extract sub-agent parent linkage from source_path.
+
+    Returns:
+      (1, parent_uuid) — file is under /subagents/ AND the folder above
+                         matches a UUID shape
+      (1, None)        — file is under /subagents/ but the parent folder
+                         isn't a valid UUID (defensive: don't store garbage
+                         as parent_session_id)
+      (0, None)        — file is not under /subagents/
+
+    Expected path shape:
+      .../<parent_session_uuid>/subagents/agent-<hash>.jsonl
+
+    Claude Code JSONL format note:
+      Sub-agent JSONL files write the PARENT session's UUID into their
+      own `sessionId` field. This means `session_id == parent_session_id`
+      for every sub-agent row in DB — not a scanner bug; that is how
+      Claude Code formats its JSONL output.
+
+      The true sub-agent identifier is the `agent-<hash>` in the
+      filename (e.g. `agent-ab9d312edddc9639a.jsonl`). We currently lose
+      this identifier because scanner keys session_id on the sessionId
+      field inside the JSONL content (see `_parse_line` at line 112).
+
+      Consequence: ~147 sub-agent JSONL files on disk collapse to ~35 DB
+      rows because multiple sub-agents under the same parent share the
+      same sessionId in content. Distinguishing individual sub-agents
+      requires using `agent-<hash>` as session_id — deferred design.
+      See MEMORY.md "Known gaps".
     """
     if "/subagents/" not in filepath:
         return 0, None
     parent_dir = filepath.split("/subagents/")[0]
     parent_uuid = os.path.basename(parent_dir)
-    return 1, (parent_uuid or None)
+    if parent_uuid and _UUID_PATTERN.match(parent_uuid):
+        return 1, parent_uuid
+    # Sub-agent file but parent folder isn't a UUID — flag as sub-agent
+    # but leave parent_session_id NULL rather than store garbage.
+    return 1, None
 
 
 def scan_jsonl_file(filepath, folder_path, conn, source_path="", project_map=None):
