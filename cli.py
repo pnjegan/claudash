@@ -74,7 +74,50 @@ from claude_ai_tracker import (
 )
 
 
+_PIDFILE = "/tmp/claudash.pid"
+_pid_lock_handle = None
+
+
+def _acquire_pid_lock():
+    """Prevent a second cli.py dashboard from starting. Returns the open
+    file handle; fcntl.flock is released only when the handle is closed
+    (process exit). Open in 'a+' mode so the file isn't truncated before
+    the lock attempt — the losing process needs to read the winner's PID."""
+    import fcntl as _fcntl
+    import atexit as _atexit
+    import os as _os
+    pf = open(_PIDFILE, "a+")
+    try:
+        _fcntl.flock(pf, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except BlockingIOError:
+        pf.seek(0)
+        existing = pf.read().strip() or "?"
+        pf.close()
+        print(f"Claudash already running (pid {existing}). "
+              f"Kill it first or rm {_PIDFILE}", file=sys.stderr)
+        raise SystemExit(1)
+
+    # Won the lock — truncate and write our pid
+    pf.seek(0)
+    pf.truncate()
+    pf.write(str(_os.getpid()))
+    pf.flush()
+
+    def _cleanup():
+        try:
+            if _os.path.exists(_PIDFILE):
+                _os.unlink(_PIDFILE)
+        except OSError:
+            pass
+
+    _atexit.register(_cleanup)
+    return pf
+
+
 def cmd_dashboard():
+    global _pid_lock_handle
+    _pid_lock_handle = _acquire_pid_lock()
+
     import argparse
     parser = argparse.ArgumentParser(prog="claudash dashboard", add_help=False)
     parser.add_argument("--port", type=int, default=8080)
