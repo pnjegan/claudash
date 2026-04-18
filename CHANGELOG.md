@@ -1138,3 +1138,97 @@ Claudash analyzes Claude Code transcripts. Claude is the right model to write CL
 
 - **Medium-severity findings #9, #10 from this session's audit not fixed**: `_NO_DASH_KEY` bypass set fragility (needs framework-level guardrail), negative-path test for `/api/claude-ai/sync` token missing.
   Why deferred: 6-fix budget reached; these were deprioritised below the highest-impact items.
+
+## [2026-04-17] Session 20 — Pre-flight audit of 7-item plan → 4 real fixes shipped as v2.0.7; 3 confirmed no-ops
+
+### Fixed
+- **README broken screenshot** (v2.0.7) — `README.md:13` pointed to `docs/screenshot.png`, which has never existed in the repo. Updated to `screenshots/Claudash_V2.0.4.png` (the PNG uploaded via GitHub web UI in Session 19 merge). Added a caption: "Claudash v2.0.6 — efficiency score, window usage, API equivalent cost, cache hit rate".
+  Files: README.md
+
+- **Ambiguous "+" nav tab** (v2.0.7) — the dashboard account-tab bar ended with `<a class="tab add-tab" href="/accounts">+</a>`. Users read the "+" as "add new account" even though /accounts handles both add AND edit flows. Replaced with `⚙ Accounts` label and `title="Manage accounts"` tooltip.
+  Files: templates/dashboard.html:963
+
+### Added
+- **Cron watchdog for Claudash liveness** (not in repo — crontab only) — runs every 5 minutes, probes `/api/data?account=all`, and only restarts if both (a) the endpoint is down AND (b) `pgrep -f 'cli.py dashboard'` returns no match. Uses `cd /root/projects/jk-usage-dashboard` before launching so python3 resolves `cli.py`. The double-gate prevents cron-storm duplicate processes when the endpoint is slow but the process is alive.
+  Files: user's crontab (not tracked in repo)
+
+- **4 efficiency rules appended to Tidify's CLAUDE.md** (not in jk-usage-dashboard repo) — appended to `/root/projects/Tidify15/.claude/CLAUDE.md`: floundering-retry cap, phase-handoff read-once rule, 60 %-context early-compact rule, 1000-row file-size pre-check. Backup at `/root/projects/Tidify15/.claude/CLAUDE.md.bak-2026*` for rollback. These rules correspond to the 4 fixes that were created in DB but never applied to the actual file.
+  Files: /root/projects/Tidify15/.claude/CLAUDE.md (outside this repo)
+
+### Architecture Decisions
+- **Pre-flight audit before execution saved 3 of 7 planned fixes from being built redundantly.** Before touching code, verified each proposed fix against live state. Findings: Fix 1 (`/api/data` version=None) was a 60-s stale-cache artefact — fresh requests return '2.0.6' correctly. Fix 4 (window_risk not firing) — insight IS firing (1 active in DB). Fix 5 (subagent tracking absent) — fully built: 12,443 rows, 35 sessions, $4,008.67 tracked; `subagent_metrics()` exists at `analyzer.py:576-640`; `dashboard.html:1457` has `renderSubagentBlock`; `insights.py:277-296` has `SUBAGENT_COST_SPIKE` rule with 4 active insights.
+  Why: user's plan cited a prior audit's findings that had since been addressed or were misdiagnosed. Building what already exists wastes time and adds drift risk.
+  Impact: session shipped 4 fixes (2 code commits, 2 system-level edits) instead of 7; no-op work was reported with verification evidence instead of being forced through.
+
+- **Watchdog probes `/api/data?account=all` instead of `/favicon.ico`.** User's original spec specified favicon, but the favicon route was only added in v2.0.6 and the running process doesn't reload modules on auto-restart — so the favicon would 404 indefinitely and trigger restart loops until the old process was manually killed. `/api/data?account=all` is available across all deployed versions.
+  Why: chose a probe endpoint that was already stable in the running process, not one that relied on new-code being live.
+  Impact: watchdog activates cleanly today without requiring a manual process restart first.
+
+### Known Issues / Not Done
+- **Fix 6's "commit in jk-usage-dashboard" was infeasible** — the fix edits a file in another project (`/root/projects/Tidify15/.claude/CLAUDE.md`). No jk-usage-dashboard commit for this step; the DB-level "applied" status update for the 4 fixes (via `/api/fixes/{id}/apply` or direct DB update) was not performed. Claudash's own Fix Tracker UI will still show those 4 fixes as "measuring" / unapplied, even though the rules are now live in Tidify.
+  Why deferred: spec inconsistency; would need a separate `UPDATE fixes SET status='applied', applied_to_path=...` round-trip to reconcile.
+
+- **Running Claudash process (pid 1709234) still on pre-Fix-2/3 code.** Python module cache survives auto-restart. Fixes 2 and 3 will only go live after a real process kill + relaunch (manually or via the new cron watchdog when it fires). New `npx @jeganwrites/claudash@2.0.7` installs get the code directly.
+  Why deferred: no urgent failure mode; would have severed the user's live dashboard mid-session.
+
+- **Medium-severity findings from Session 19's audit still open**: `_NO_DASH_KEY` bypass-set fragility (server.py:650), missing negative-path test for `/api/claude-ai/sync` token, and the `MODEL_PRICING` refresh procedure (config.py:81-84) — all carried forward.
+  Why deferred: this session was a bounded 7-fix plan, not a full gap-closure pass.
+
+- **Background task leak detected at session end** — background sleep-monitor from the earlier WAL-fix verification (task ID `br83pkbyu`) was polling on a pattern that never matched a real PID and eventually failed. Harmless but should be cleaned up in the harness; real verification ran fine via foreground commands.
+  Why deferred: not a code or product issue; a local-session ergonomics artefact.
+
+## [2026-04-18] Session 21 — Claudash v3.0.0 architecture-compliance intelligence (schema-reconciled)
+
+### Fixed
+- **v3 plan column mapping reconciled against real DB** — original v3 prompt referenced `sessions.total_cost_usd`, `sessions.turns`, `waste_events.tokens_wasted`, `insights.rule_id/title/severity`, `lifecycle_events.context_pct`, and `insights.run_all_rules()` — none of which exist. Real columns: `cost_usd`, derived via `COUNT(*) GROUP BY session_id` (per-turn rows → 72 sessions not 22,546), `token_cost`, `insight_type/message/detail_json`, `context_pct_at_event`, `insights.generate_insights()`. Full mapping in the session transcript; no code changed based on wrong schema.
+  Files: (planning only; snapshot at `.dev-cdc/REAL_DATA_SNAPSHOT_20260418.md`, local-only)
+
+- **`four_tier_compaction` threshold** — v3 prompt had `context_pct > 0.80` assuming 0-1 fraction. Actual column `context_pct_at_event` is 0-100 scale; max observed value across 297 events = 66.78. Corrected backfill rule to `violated = max_pct > 50`, which yielded 4 real violator sessions (Tidify 1, Claudash 2, Brainworks 1).
+
+### Added
+- **3 new DB tables** (additive, no existing schema touched): `compliance_events` (127 rows backfilled — 74 prompt_cache passes + 4 four_tier_compaction violated + 49 passed), `skill_usage` (0 rows, awaits JSONL tool-call extraction in v3.1), `generated_hooks` (0 rows, awaits hook generator).
+  Files: data/usage.db (additive schema only)
+
+- **4 new insight rules in insights.py** — grounded in real-data snapshot; all fire on current data with zero duplication of prior rules:
+  - `repeated_reads_project` (Rule 15) — fires on **3 projects / $6,790 waste surfaced** (Tidify $4,876.71, Claudash $1,596.23, WikiLoop $358.68). Was previously tracked only in `waste_events` and `mcp_warnings`; insights.py had no rule reading it.
+  - `multi_compact_churn` (Rule 16) — fires on **35 churn sessions across 3 projects** (Tidify 26, Claudash 6, WikiLoop 3); worst session had 7 compacts in one sitting. Orthogonal to existing `compaction_gap` (didn't compact) and `bad_compact_detected` (single lossy compact).
+  - `cost_outlier_session` (Rule 17) — fires on **4 spike sessions / $1,941.39** surfaced individually with session_id + date (Tidify 3, Claudash 1). `waste_events.pattern_type='cost_outlier'` was populated but no insight surfaced it to the user.
+  - `fix_never_measured` (Rule 18) — fires on **1 fix** (#12 WikiLoop repeated_reads, applied 36h ago with 0 measurements). Closes the QA gap before `fix_regressing` can fire.
+  Files: insights.py
+
+- **`cli.py realstory --project X`** — prints verified facts only (no estimates). Session-level aggregation, session-scoped waste, compliance-score-per-pattern, fix list with latest verdict. Empty sections say "no data" instead of hiding.
+  Files: cli.py
+
+- **`GET /api/realstory?project=X&days=30`** — JSON mirror of the CLI output. Returns 400 with `{"error":"project parameter required"}` when `project` is missing. Verified live on a throwaway port-9091 server (live process untouched).
+  Files: server.py
+
+- **`.dev-cdc/REAL_DATA_SNAPSHOT_20260418.md`** (178 lines, local-only) and **`.dev-cdc/BUG_HUNT_V3_20260418.md`** (8-dimension audit, zero V3 blockers). Both gitignored per .gitignore:50.
+
+### Dropped from original plan after real-data review
+- **`subagent_chain_cost`** rule — max observed children-per-parent is 1. Rule would never fire. Existing `SUBAGENT_COST_SPIKE` (insights.py:277-299) already covers the real signal (project-wide share).
+- **`prompt_cache_absent`** rule — 0 sessions across 30 days have `cache_creation_tokens=0 AND turns>10`. Rule would never fire.
+- **`output_input_ratio_low`** rule — actual ratios 631-33,878% (inverted from v3 hypothesis). `model_waste` already surfaces the intended signal.
+- **`single_session_spike`** rule — duplicates `waste_events.pattern_type='cost_outlier'`; replaced by `cost_outlier_session` Rule 17 which surfaces the already-populated data.
+- **`memory_md` and `jit_skills` compliance patterns** — require tool-call data not stored in current schema. Deferred to v3.1 when JSONL-level extraction lands.
+- **6th efficiency-score dimension `arch_compliance`** — deferred per user request; compliance_events only has 127 rows (mostly passes). TODO comment added at `analyzer.py:1172`. Revisit when 2+ weeks of real data accumulates.
+
+### Architecture Decisions
+- **Per-turn vs per-session disambiguation.** `sessions` is a per-turn table (22,546 rows across 72 distinct session_ids). Every new v3 query uses a CTE that first rolls turns up to sessions via `GROUP BY session_id`, then aggregates. The `realstory` CLI and API, and all 4 new insight rules, follow this pattern. Querying `sessions` directly without this rollup (as the v3 prompt did) would inflate session counts by ~300×.
+  Why: avoided a silent-wrong-numbers bug class that would have made every v3 metric cosmetically plausible but quantitatively wrong.
+
+- **Pre-flight schema audit saved implementing 3 dead rules.** Before writing any insight rule, I ran a COUNT query for each proposed rule's trigger against real data. Three of four originally-proposed rules (`prompt_cache_absent`, `output_input_ratio_low`, `subagent_chain_cost`) returned 0 rows. They were replaced with 4 rules (A/B/C/D) that each produce non-empty output on today's DB.
+  Impact: zero shipped rules that would have been dead-on-arrival.
+
+- **Test server on port 9091 for API verification.** Live dashboard on 8080 (pid 1815106) left untouched. Smoke-tested `/api/realstory?project=Tidify` and `?project=WikiLoop` on an ephemeral process, which was killed after verification. Session 20's "don't restart mid-session" lesson honored.
+
+### Known Issues / Not Done
+- **Live dashboard process (pid 1815106) still serving pre-v3 code.** New `/api/realstory` endpoint and new insight rules won't be reachable from the live UI until a process restart. Follow-up: kill + relaunch at a low-usage window, or let the cron watchdog from Session 20 catch the next natural restart.
+  Why deferred: Session 20's carried-forward guidance — don't sever the live dashboard mid-session.
+
+- **Compliance backfill coverage incomplete** — only `prompt_cache` and `four_tier_compaction` patterns backfilled. `memory_md` and `jit_skills` patterns require tool-call data from raw JSONL, not stored in current schema. Needs v3.1 scanner extension to extract tool invocations.
+
+- **`skill_usage` and `generated_hooks` tables are empty.** Tables exist; no code writes to them yet. Awaiting JSONL tool-call extraction (skill_usage) and the hook generator (generated_hooks).
+
+- **`compliance_events` shows `status='passed'` for 121 of 127 rows.** Useful baseline, but surfaces as "everything's fine" until more violators accumulate. Dashboard UI should probably default-hide passes.
+
+- **Medium-severity findings from Session 19/20 audit still open**: `_NO_DASH_KEY` bypass-set fragility (server.py:650), missing negative-path test for `/api/claude-ai/sync` token, and the `MODEL_PRICING` refresh procedure (config.py:81-84) — carried forward to v3.1.

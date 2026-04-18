@@ -1063,6 +1063,139 @@ def cmd_export():
     print(f"Exported {len(rows)} rows to {outpath}")
 
 
+def cmd_realstory():
+    """Print verified facts for a project. No estimates; empty = empty."""
+    project = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--project" and i + 1 < len(sys.argv):
+            project = sys.argv[i + 1]
+            break
+    if not project:
+        print("Usage: python3 cli.py realstory --project <name>")
+        sys.exit(1)
+
+    init_db()
+    conn = get_conn()
+    since = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
+
+    # Session-level aggregation (rolls per-turn rows into sessions)
+    totals = conn.execute(
+        "WITH s AS ("
+        "  SELECT session_id, SUM(cost_usd) AS cost, COUNT(*) AS turns, "
+        "         SUM(output_tokens) AS out_tok, SUM(input_tokens) AS in_tok, "
+        "         SUM(cache_read_tokens) AS cr, SUM(cache_creation_tokens) AS cw, "
+        "         MIN(timestamp) AS ts "
+        "  FROM sessions WHERE project = ? AND timestamp >= ? "
+        "  GROUP BY session_id"
+        ") "
+        "SELECT COUNT(*) AS sessions, SUM(cost) AS total_cost, "
+        "       AVG(cost) AS avg_cost, MAX(cost) AS max_cost, "
+        "       AVG(out_tok) AS avg_out, "
+        "       SUM(CASE WHEN cw=0 AND turns>10 THEN 1 ELSE 0 END) AS zero_cache, "
+        "       SUM(in_tok) AS in_tok, SUM(cr) AS cr "
+        "FROM s",
+        (project, since),
+    ).fetchone()
+
+    max_session = conn.execute(
+        "WITH s AS ("
+        "  SELECT session_id, SUM(cost_usd) AS cost, MIN(timestamp) AS ts "
+        "  FROM sessions WHERE project = ? GROUP BY session_id "
+        ") SELECT session_id, cost, "
+        "         datetime(ts,'unixepoch') AS date "
+        "FROM s ORDER BY cost DESC LIMIT 1",
+        (project,),
+    ).fetchone()
+
+    waste_rows = conn.execute(
+        "SELECT pattern_type, COUNT(*) AS n, SUM(token_cost) AS cost "
+        "FROM waste_events WHERE project=? AND detected_at >= ? "
+        "GROUP BY pattern_type ORDER BY n DESC",
+        (project, since),
+    ).fetchall()
+
+    compliance_rows = conn.execute(
+        "SELECT pattern_id, status, COUNT(*) AS n "
+        "FROM compliance_events WHERE project=? "
+        "GROUP BY pattern_id, status ORDER BY pattern_id, status",
+        (project,),
+    ).fetchall()
+
+    fix_rows = conn.execute(
+        "SELECT f.id, f.title, f.waste_pattern, f.status, "
+        "       (SELECT verdict FROM fix_measurements WHERE fix_id=f.id "
+        "        ORDER BY measured_at DESC LIMIT 1) AS latest_verdict "
+        "FROM fixes f WHERE project=? ORDER BY f.created_at DESC",
+        (project,),
+    ).fetchall()
+    conn.close()
+
+    sessions = (totals["sessions"] if totals else 0) or 0
+    if sessions == 0:
+        print(f"\n  REAL STORY — {project} (last 30 days)")
+        print("  " + "=" * 60)
+        print(f"  No sessions found for project '{project}'.")
+        print("  (Run `python3 cli.py scan` if you expected data.)")
+        return
+
+    total_cost = totals["total_cost"] or 0
+    avg_cost = totals["avg_cost"] or 0
+    max_cost = totals["max_cost"] or 0
+    avg_out = totals["avg_out"] or 0
+    zero_cache = totals["zero_cache"] or 0
+    in_tok = totals["in_tok"] or 0
+    cr = totals["cr"] or 0
+    cache_hit = cr / max(cr + in_tok, 1) * 100
+
+    print(f"\n  REAL STORY — {project} (last 30 days)")
+    print("  " + "=" * 60)
+    print(f"  Sessions:          {sessions}")
+    print(f"  Total API-equiv:   ${total_cost:.2f}")
+    print(f"  Avg per session:   ${avg_cost:.2f}")
+    if max_session:
+        print(f"  Max single session: ${max_session['cost']:.2f} on {max_session['date']}")
+    else:
+        print(f"  Max single session: ${max_cost:.2f}")
+
+    print("\n  WASTE DETECTED:")
+    if waste_rows:
+        for r in waste_rows:
+            print(f"    {r['pattern_type']:18} {r['n']:4} events  ${r['cost'] or 0:.2f}")
+    else:
+        print("    (no waste events in last 30 days)")
+
+    print("\n  CACHE:")
+    print(f"    Sessions with ZERO cache + turns>10: {zero_cache} of {sessions}")
+    print(f"    Cache hit rate (read/(read+input)):  {cache_hit:.1f}%")
+
+    print("\n  MODEL FIT:")
+    print(f"    Avg output tokens/session: {avg_out:,.0f} (Opus threshold: 500+ to justify)")
+
+    print("\n  COMPLIANCE:")
+    if compliance_rows:
+        by_pat = {}
+        for r in compliance_rows:
+            by_pat.setdefault(r["pattern_id"], {})[r["status"]] = r["n"]
+        for pat, stats in by_pat.items():
+            v = stats.get("violated", 0)
+            p = stats.get("passed", 0)
+            total = v + p
+            score = (p / total * 100) if total else 0
+            print(f"    {pat:22} {score:5.1f}% pass ({v} violated / {p} passed)")
+    else:
+        print("    (no compliance events — run backfill)")
+
+    print("\n  FIXES APPLIED:")
+    if fix_rows:
+        for r in fix_rows:
+            verdict = r["latest_verdict"] or "unmeasured"
+            title = (r["title"] or "")[:50]
+            print(f"    #{r['id']:3} [{r['status']:9}] {r['waste_pattern']:18} verdict:{verdict:18} {title}")
+    else:
+        print("    (no fixes yet)")
+    print()
+
+
 def cmd_sync_daemon():
     """Run the sync daemon that pushes claude.ai browser data every 5 min."""
     daemon = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1344,6 +1477,7 @@ def main():
         "keys": cmd_keys,
         "claude-ai": cmd_claude_ai,
         "sync-daemon": cmd_sync_daemon,
+        "realstory": cmd_realstory,
     }
 
     handler = commands.get(cmd)

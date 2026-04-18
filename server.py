@@ -390,6 +390,91 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "date_range_days": 30,
             })
 
+        elif path == "/api/realstory":
+            project = params.get("project", [None])[0]
+            if not project:
+                self._serve_json({"error": "project parameter required"}, 400)
+                return
+            days = int(params.get("days", ["30"])[0])
+            since = int(time.time()) - days * 86400
+            conn = get_conn()
+            try:
+                totals = conn.execute(
+                    "WITH s AS ("
+                    "  SELECT session_id, SUM(cost_usd) AS cost, COUNT(*) AS turns, "
+                    "         SUM(output_tokens) AS out_tok, SUM(input_tokens) AS in_tok, "
+                    "         SUM(cache_read_tokens) AS cr, SUM(cache_creation_tokens) AS cw "
+                    "  FROM sessions WHERE project=? AND timestamp >= ? "
+                    "  GROUP BY session_id"
+                    ") SELECT COUNT(*) AS sessions, SUM(cost) AS total_cost, "
+                    "         AVG(cost) AS avg_cost, MAX(cost) AS max_cost, "
+                    "         AVG(out_tok) AS avg_out, "
+                    "         SUM(CASE WHEN cw=0 AND turns>10 THEN 1 ELSE 0 END) AS zero_cache, "
+                    "         SUM(in_tok) AS in_tok, SUM(cr) AS cr "
+                    "FROM s",
+                    (project, since),
+                ).fetchone()
+                max_session = conn.execute(
+                    "WITH s AS (SELECT session_id, SUM(cost_usd) AS cost, MIN(timestamp) AS ts "
+                    "           FROM sessions WHERE project=? GROUP BY session_id) "
+                    "SELECT session_id, cost, ts FROM s ORDER BY cost DESC LIMIT 1",
+                    (project,),
+                ).fetchone()
+                waste = {}
+                for r in conn.execute(
+                    "SELECT pattern_type, COUNT(*) AS n, SUM(token_cost) AS cost "
+                    "FROM waste_events WHERE project=? AND detected_at >= ? "
+                    "GROUP BY pattern_type",
+                    (project, since),
+                ).fetchall():
+                    waste[r["pattern_type"]] = {"events": r["n"],
+                                                "cost_usd": round(r["cost"] or 0, 2)}
+                comp = {}
+                for r in conn.execute(
+                    "SELECT pattern_id, status, COUNT(*) AS n "
+                    "FROM compliance_events WHERE project=? "
+                    "GROUP BY pattern_id, status",
+                    (project,),
+                ).fetchall():
+                    comp.setdefault(r["pattern_id"], {})[r["status"]] = r["n"]
+                fixes = []
+                for r in conn.execute(
+                    "SELECT f.id, f.title, f.waste_pattern, f.status, "
+                    "       (SELECT verdict FROM fix_measurements WHERE fix_id=f.id "
+                    "        ORDER BY measured_at DESC LIMIT 1) AS latest_verdict "
+                    "FROM fixes f WHERE project=? ORDER BY f.created_at DESC",
+                    (project,),
+                ).fetchall():
+                    fixes.append({"id": r["id"], "title": r["title"],
+                                  "waste_pattern": r["waste_pattern"],
+                                  "status": r["status"],
+                                  "verdict": r["latest_verdict"]})
+            finally:
+                conn.close()
+
+            sessions = (totals["sessions"] if totals else 0) or 0
+            in_tok = (totals["in_tok"] if totals else 0) or 0
+            cr = (totals["cr"] if totals else 0) or 0
+            cache_hit = cr / max(cr + in_tok, 1) * 100
+            resp = {
+                "project": project,
+                "days": days,
+                "sessions": sessions,
+                "total_cost_usd": round(totals["total_cost"] or 0, 2) if totals else 0,
+                "avg_cost_usd": round(totals["avg_cost"] or 0, 4) if totals else 0,
+                "max_session_cost_usd": round(totals["max_cost"] or 0, 2) if totals else 0,
+                "max_session_id": max_session["session_id"] if max_session else None,
+                "max_session_date": (datetime.fromtimestamp(max_session["ts"], tz=timezone.utc)
+                                     .strftime("%Y-%m-%d") if max_session else None),
+                "avg_output_tokens": int(totals["avg_out"] or 0) if totals else 0,
+                "zero_cache_sessions": totals["zero_cache"] or 0 if totals else 0,
+                "cache_hit_rate_pct": round(cache_hit, 1),
+                "waste_events": waste,
+                "compliance": comp,
+                "fixes": fixes,
+            }
+            self._serve_json(resp)
+
         # ── Account management GET endpoints ──
         elif path == "/api/accounts":
             conn = get_conn()

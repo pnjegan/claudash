@@ -1169,6 +1169,10 @@ def compute_efficiency_score(conn, account="all"):
         {"name": "compaction", "score": compaction_score, "weight": 0.10,
          "label": "Compaction discipline",
          "detail": f"{compact_events} compaction events in 30d"},
+        # TODO(v3.1): add 6th dimension `arch_compliance` from compliance_events
+        # when 2+ weeks of data accumulates. Proposed 10% weight; rebalance
+        # others -2% each. Skipped today because compliance_events has only
+        # 127 rows across 30d (mostly 'passed') — not enough signal yet.
     ]
 
     total = round(sum(d["score"] * d["weight"] for d in dimensions))

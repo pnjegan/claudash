@@ -386,6 +386,145 @@ def generate_insights(conn=None):
     except Exception:
         pass
 
+    # ── 15. REPEATED_READS_PROJECT (v3) ──
+    # Surfaces the dominant waste pattern at project level. waste_events has
+    # repeated_reads rows but insights.py had no rule reading them.
+    try:
+        rows = conn.execute(
+            "SELECT project, account, "
+            "       SUM(CASE WHEN detected_at > ? THEN 1 ELSE 0 END) AS last_7d, "
+            "       COUNT(*) AS last_30d, "
+            "       SUM(token_cost) AS cost_usd "
+            "FROM waste_events "
+            "WHERE pattern_type='repeated_reads' AND detected_at > ? "
+            "GROUP BY project, account "
+            "HAVING last_7d >= 3 OR last_30d >= 5",
+            (_days_ago(7), _days_ago(30)),
+        ).fetchall()
+        for r in rows:
+            proj = r["project"] or "Other"
+            if _insight_exists_recent(conn, "repeated_reads_project", proj):
+                continue
+            n = r["last_7d"] or 0
+            cost = r["cost_usd"] or 0
+            msg = (f"{proj} re-read the same files {n} times in 7d — "
+                   f"${cost:.2f} wasted. Add 'never re-read' rule to CLAUDE.md")
+            detail = json.dumps({"last_7d": n, "last_30d": r["last_30d"],
+                                 "cost_usd": round(cost, 2)})
+            insert_insight(conn, r["account"] or "all", proj,
+                           "repeated_reads_project", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
+    # ── 16. MULTI_COMPACT_CHURN (v3) ──
+    # Orthogonal to compaction_gap (didn't compact) and bad_compact_detected
+    # (single compact lost context). This one fires when a session compacted
+    # multiple times — context thrashing, split work into smaller tasks.
+    try:
+        rows = conn.execute(
+            "WITH c AS ("
+            "  SELECT session_id, project, COUNT(*) AS n_compacts, "
+            "         MIN(timestamp) AS first_ts "
+            "  FROM lifecycle_events WHERE event_type='compact' "
+            "  GROUP BY session_id, project "
+            "  HAVING n_compacts >= 2"
+            ") "
+            "SELECT project, COUNT(*) AS churn_sessions, "
+            "       MAX(n_compacts) AS worst, "
+            "       SUM(CASE WHEN first_ts > ? THEN 1 ELSE 0 END) AS last_7d "
+            "FROM c GROUP BY project "
+            "HAVING last_7d >= 2 OR churn_sessions >= 3",
+            (_days_ago(7),),
+        ).fetchall()
+        for r in rows:
+            proj = r["project"] or "Other"
+            if _insight_exists_recent(conn, "multi_compact_churn", proj):
+                continue
+            worst = r["worst"] or 0
+            sessions = r["churn_sessions"] or 0
+            msg = (f"{proj} compacted {worst} times in a single session "
+                   f"({sessions} churn sessions in 30d) — "
+                   f"split work into smaller tasks instead of re-compacting")
+            detail = json.dumps({"worst_compacts": worst,
+                                 "churn_sessions": sessions,
+                                 "last_7d": r["last_7d"]})
+            acct_row = conn.execute(
+                "SELECT account FROM sessions WHERE project=? LIMIT 1", (proj,)
+            ).fetchone()
+            acct = acct_row["account"] if acct_row else "all"
+            insert_insight(conn, acct, proj, "multi_compact_churn", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
+    # ── 17. COST_OUTLIER_SESSION (v3) ──
+    # Per-session surface for waste_events.pattern_type='cost_outlier'. The
+    # data is populated by waste_patterns.py but no insight surfaced it.
+    try:
+        rows = conn.execute(
+            "SELECT session_id, project, account, detected_at, token_cost "
+            "FROM waste_events "
+            "WHERE pattern_type='cost_outlier' AND detected_at > ? "
+            "ORDER BY token_cost DESC",
+            (_days_ago(7),),
+        ).fetchall()
+        for r in rows:
+            proj = r["project"] or "Other"
+            sid_short = (r["session_id"] or "")[:12]
+            # Debounce per-session (not per-project) — key is sid_short
+            if _insight_exists_recent(conn, "cost_outlier_session",
+                                      f"{proj}_{sid_short}", hours=168):
+                continue
+            cost = r["token_cost"] or 0
+            date_str = datetime.fromtimestamp(
+                r["detected_at"], tz=timezone.utc
+            ).strftime("%Y-%m-%d")
+            msg = (f"{proj} spike — session {sid_short} on {date_str} "
+                   f"cost ${cost:.2f}. Check for runaway loop or subagent chain")
+            detail = json.dumps({"session_id": r["session_id"],
+                                 "cost_usd": round(cost, 2),
+                                 "date": date_str})
+            insert_insight(conn, r["account"] or "all",
+                           f"{proj}_{sid_short}",
+                           "cost_outlier_session", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
+    # ── 18. FIX_NEVER_MEASURED (v3) ──
+    # Applied fix with zero fix_measurements after 24h — agentic-loop QA gap.
+    # Fires BEFORE fix_regressing (which requires a verdict to exist).
+    try:
+        rows = conn.execute(
+            "SELECT f.id, f.project, f.waste_pattern, f.created_at, "
+            "       COUNT(m.id) AS meas_count "
+            "FROM fixes f LEFT JOIN fix_measurements m ON f.id=m.fix_id "
+            "WHERE f.status='applied' "
+            "GROUP BY f.id "
+            "HAVING meas_count = 0 "
+            "  AND (strftime('%s','now') - f.created_at) > 24*3600"
+        ).fetchall()
+        for r in rows:
+            proj = r["project"] or "Other"
+            fid = r["id"]
+            key = f"{proj}_fix{fid}"
+            if _insight_exists_recent(conn, "fix_never_measured", key, hours=24):
+                continue
+            hours = (_now() - (r["created_at"] or _now())) / 3600.0
+            msg = (f"Fix #{fid} ({r['waste_pattern']}) applied {hours:.0f}h ago "
+                   f"but never measured — run: cli.py measure {fid}")
+            detail = json.dumps({"fix_id": fid, "hours_since_applied": round(hours, 1),
+                                 "waste_pattern": r["waste_pattern"]})
+            acct_row = conn.execute(
+                "SELECT account FROM sessions WHERE project=? LIMIT 1", (proj,)
+            ).fetchone()
+            acct = acct_row["account"] if acct_row else "all"
+            insert_insight(conn, acct, key, "fix_never_measured", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
     conn.commit()
     if should_close:
         conn.close()
