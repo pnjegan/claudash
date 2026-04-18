@@ -1193,6 +1193,7 @@ function authHeaders() {
   function renderProjects(data) {
     const projs = data.projects || [];
     const subagents = data.subagent_metrics || {};
+    const subagentIntel = data.subagent_intelligence || {};
     const waste = data.waste_summary || {};
     $('proj-count').textContent = projs.length;
     if (!projs.length) {
@@ -1251,6 +1252,7 @@ function authHeaders() {
             renderContextRotBlock(p.name, contextRot[p.name] || null) +
             renderThresholdBlock(p.name, recommendations[p.name] || null) +
             renderSubagentBlock(p.name, subagents[p.name] || {}) +
+            renderSubagentIntelBlock(p.name, subagentIntel[p.name] || null) +
             renderWasteBlock(p.name, waste[p.name] || {}) +
           '</td>' +
         '</tr>'
@@ -1472,6 +1474,60 @@ function authHeaders() {
       }
       html += '</div>';
     }
+    html += '</div>';
+    return html;
+  }
+
+  // v3.1 — mechanical vs reasoning classification for sub-agent work
+  function renderSubagentIntelBlock(projName, si) {
+    if (!si) return '';
+    const total = (si.mechanical_count || 0) + (si.reasoning_count || 0)
+                  + (si.mixed_count || 0);
+    if (!total) return '';
+
+    const verdict = si.verdict || 'justified';
+    const verdictLabel = {
+      justified: '\u2713 Reasoning \u2014 Opus justified',
+      review_mechanical: '\u26A0 Some mechanical work',
+      optimize_possible: '\u26A1 Haiku could save cost',
+    }[verdict] || verdict;
+    const verdictColor = {
+      justified: 'var(--accent-green)',
+      review_mechanical: 'var(--accent-amber)',
+      optimize_possible: 'var(--accent-red)',
+    }[verdict] || 'var(--text-secondary)';
+
+    let html = '<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">';
+    html += '<div class="k" style="font-family:var(--sans);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-tertiary);margin-bottom:8px">Work classification</div>';
+
+    html += '<div class="kvs">';
+    html += '<div class="kv"><span class="k">mechanical</span><span class="v">' + fmtNum(si.mechanical_count || 0) + ' / ' + fmtMoney(si.mechanical_cost || 0) + '</span></div>';
+    html += '<div class="kv"><span class="k">reasoning</span><span class="v">' + fmtNum(si.reasoning_count || 0) + ' / ' + fmtMoney(si.reasoning_cost || 0) + '</span></div>';
+    html += '<div class="kv"><span class="k">mixed</span><span class="v">' + fmtNum(si.mixed_count || 0) + ' / ' + fmtMoney(si.mixed_cost || 0) + '</span></div>';
+    html += '</div>';
+
+    html += '<div style="margin-top:10px;font-family:var(--sans);font-size:12px;color:' + verdictColor + ';font-weight:500">' + esc(verdictLabel) + '</div>';
+
+    if (verdict === 'optimize_possible' && (si.haiku_savings_estimate || 0) > 0) {
+      html += '<div style="margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--text-secondary)">';
+      html += 'Set <code>CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5</code>';
+      html += '<br/>Est. savings on mechanical work: ' + fmtMoney(si.haiku_savings_estimate);
+      html += '</div>';
+    }
+
+    const top = si.top_sessions || [];
+    if (top.length) {
+      html += '<div style="margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--text-secondary)">Top sub-agent sessions:</div>';
+      html += '<div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);margin-top:4px">';
+      for (const t of top) {
+        html += '<div>\u00b7 ' + esc(t.session_id || '') + '  '
+             + esc(t.classification || '') + '  '
+             + fmtNum(t.tool_call_count || 0) + ' tools  '
+             + fmtMoney(t.cost_usd || 0) + '</div>';
+      }
+      html += '</div>';
+    }
+
     html += '</div>';
     return html;
   }
