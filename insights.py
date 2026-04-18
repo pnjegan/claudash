@@ -528,6 +528,40 @@ def generate_insights(conn=None):
     except Exception:
         pass
 
+    # ── 19. SUBAGENT_MODEL_WASTE (v3.1) ──
+    # Fires when a project's sub-agent work is dominantly mechanical
+    # (optimize_possible verdict) with >$10 in mechanical cost. Actionable
+    # remediation: CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-4-5.
+    try:
+        from analyzer import subagent_intelligence as _subagent_intel
+        si = _subagent_intel(conn, "all")
+        for proj, data in si.items():
+            if data.get("verdict") != "optimize_possible":
+                continue
+            mech_cost = data.get("mechanical_cost") or 0
+            if mech_cost <= 10.0:
+                continue
+            if _insight_exists_recent(conn, "subagent_model_waste", proj, hours=12):
+                continue
+            savings = data.get("haiku_savings_estimate") or 0
+            msg = (f"{proj}: ${mech_cost:.2f} in mechanical sub-agent work "
+                   f"Haiku could handle. Set CLAUDE_CODE_SUBAGENT_MODEL="
+                   f"claude-haiku-4-5 to save ~${savings:.2f}.")
+            detail = json.dumps({
+                "mechanical_cost": round(mech_cost, 2),
+                "mechanical_count": data.get("mechanical_count") or 0,
+                "total_subagent_cost": data.get("total_subagent_cost") or 0,
+                "haiku_savings_estimate": round(savings, 2),
+            })
+            acct_row = conn.execute(
+                "SELECT account FROM sessions WHERE project=? LIMIT 1", (proj,)
+            ).fetchone()
+            acct = acct_row["account"] if acct_row else "all"
+            insert_insight(conn, acct, proj, "subagent_model_waste", msg, detail)
+            generated += 1
+    except Exception:
+        pass
+
     conn.commit()
     if should_close:
         conn.close()
