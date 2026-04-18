@@ -7,9 +7,28 @@ Full handoff: `.dev-cdc/SESSION_22_HANDOFF.md` (in repo from this commit).
 ## Pending manual step (Homebrew tap)
 - Create github.com/pnjegan/homebrew-claudash repo (cannot be done from CLI)
 - Copy docs/homebrew/claudash.rb to Formula/claudash.rb in that tap repo
-- Replace sha256 PLACEHOLDER after cutting the v3.3.1 tag:
-    curl -sL https://github.com/pnjegan/claudash/archive/refs/tags/v3.3.1.tar.gz | sha256sum
+  (sha256 is already real — 422c0aec…40e79 — since v3.3.1 tag is pushed)
 - Verify: brew tap pnjegan/claudash && brew install claudash
+
+## Pre-launch audit (2026-04-18) — PASS
+- Security: 0 critical, 0 high — no PII, no hardcoded credentials, no
+  hardcoded Chrome derived keys, no SQL injection (f-strings only on
+  static allowlists), DB 0600, HMAC timing-safe auth on writes, CORS
+  Origin checks, fcntl LOCK_EX pidfile, session_key/raw_response scrubbed
+  from API responses
+- PII: session tokens scrubbed, conversation content never stored,
+  source_path kept local (not in API responses). API keys plaintext in
+  SQLite — acknowledged limitation, noted in SECURITY.md
+- Perf: WAL + 30s busy_timeout, 31 user indexes, ThreadingHTTPServer,
+  integrity_check=ok, PRAGMA synchronous=FULL
+- UI: viewport + @media breakpoints, empty-state first_run_message,
+  port-in-use friendly error, WSL2 detection present. Gap: no aria/alt
+  (low priority for personal tool)
+- Browser tracking: claude_ai_snapshots polling every 5min, working.
+  mac-sync derived-key removal clean
+- Version sync: package.json = _version.py = HTML = /api/health = npm
+  registry, all 3.3.1
+- Zero known critical bugs. Ready for screenshot + tweet.
 
 ## What's live
 - v3.0.0: compliance_events, 4 insight rules, cli.py realstory, /api/realstory
