@@ -104,6 +104,15 @@ def init_db():
         ("compact_count", "INTEGER DEFAULT 0"),
         ("subagent_count", "INTEGER DEFAULT 0"),
         ("compact_timing_pct", "REAL"),
+        # v3.1 — tool classification (session-aggregate; same value on each turn row)
+        ("tool_call_count", "INTEGER DEFAULT 0"),
+        ("bash_count", "INTEGER DEFAULT 0"),
+        ("read_count", "INTEGER DEFAULT 0"),
+        ("write_count", "INTEGER DEFAULT 0"),
+        ("grep_count", "INTEGER DEFAULT 0"),
+        ("mcp_count", "INTEGER DEFAULT 0"),
+        ("max_output_tokens", "INTEGER DEFAULT 0"),
+        ("work_classification", "TEXT"),
     ]:
         if not _column_exists(conn, "sessions", col):
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
